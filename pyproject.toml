@@ -1,0 +1,129 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mira-ble"
+dynamic = ["version"]
+description = "Async Python library for Mira digital shower valves (Activate, Mode; Platinum untested) over Bluetooth LE"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.13"
+authors = [{ name = "83noit" }]
+keywords = ["mira", "kohler", "shower", "bluetooth", "ble", "home-assistant"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+]
+dependencies = [
+    # Capped because bluez.py reads a private attribute of bleak's BlueZ manager.
+    "bleak>=3.0,<4",
+    "bleak-retry-connector>=4.0",
+    # bluez.py imports dbus_fast.annotations, which exists from 4.0.
+    "dbus-fast>=4.0; sys_platform == 'linux'",
+]
+
+[project.scripts]
+mira-ble = "mira_ble.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/83noit/mira-ble"
+Repository = "https://github.com/83noit/mira-ble"
+Issues = "https://github.com/83noit/mira-ble/issues"
+Changelog = "https://github.com/83noit/mira-ble/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/83noit/mira-ble/blob/main/docs/protocol.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "pytest-asyncio>=1.5",  # earlier releases leave event loops unclosed, which strict warnings catch
+    "pytest-cov>=7",
+    "ruff>=0.14",
+    "mypy>=1.19",
+    "dbus-fast>=4.0",  # unconditional (Linux-only at runtime) so mypy sees it on every platform
+]
+
+[tool.hatch.version]
+path = "src/mira_ble/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mira_ble"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/docs", "/README.md", "/CHANGELOG.md", "/LICENSE", "/THIRD_PARTY_NOTICES.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "N", "SIM", "RUF", "ASYNC", "PT", "T20", "D",
+    "ANN", "ARG", "C4", "DTZ", "ERA", "G", "ICN", "ISC", "LOG", "PIE", "RET", "RSE", "SLF", "TID", "TRY",
+]
+ignore = [
+    "D203",  # one-blank-line-before-class (conflicts with D211)
+    "D213",  # multi-line-summary-second-line (conflicts with D212)
+    "TRY003",  # long messages in exceptions are fine here
+    "ISC001",  # conflicts with the formatter
+    "D105",  # magic methods need no docstring
+    "D107",  # __init__ is documented by the class
+    "N818",  # exception names read better without an Error suffix here
+    "RUF001",  # × and – are used deliberately in notes and docstrings
+    "RUF002",
+    "RUF003",
+    "ASYNC109",  # explicit timeout parameters are part of the transport API
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ANN", "SLF001", "PLR2004", "ARG001", "F811"]  # F811: fixtures imported from another test module
+"src/mira_ble/cli.py" = ["T20"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.isort]
+known-first-party = ["mira_ble"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+packages = ["mira_ble"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = ["-ra", "-q", "--showlocals", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
+log_level = "INFO"
+
+[tool.coverage.run]
+source = ["mira_ble"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 95
+skip_covered = false
+
+[tool.uv]
+exclude-newer = "3 days"

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, type-check and test (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # No caching on tag pushes (release runs), to rule out cache poisoning.
+          enable-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Sync
+        run: uv sync --locked --group dev --python ${{ matrix.python }}
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: mypy --strict
+        run: uv run mypy
+      - name: pytest
+        run: uv run pytest --cov --cov-report=term
+      - name: Build
+        run: uv build
+
+  lowest-bounds:
+    name: Test against the lowest allowed direct dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: pytest
+        run: uv run --resolution lowest-direct --isolated --group dev --python 3.13 pytest
+
+  home-assistant-pins:
+    name: Test against Home Assistant's Bluetooth pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Sync
+        run: uv sync --locked --group dev --python 3.14
+      - name: Install Home Assistant's pins
+        run: uv pip install "bleak==3.0.2" "bleak-retry-connector==4.7.1"
+      - name: pytest
+        run: uv run --no-sync pytest
