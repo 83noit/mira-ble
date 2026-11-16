@@ -8,11 +8,12 @@ confirmed by reading the valve back.
 It is the library behind the Home Assistant integration
 [ha-mira-ble](https://github.com/83noit/ha-mira-ble), and has no Home Assistant dependency.
 
-> **Status: alpha, run by hand on one real valve.** Pairing, every read, starting a preset,
-> running an outlet and both stops were run from macOS against one Mira Platinum, a handful
-> of times, attended. Nothing has run through an ESPHome proxy, on Linux, or on another
-> model; those paths are tested only against a simulation and against replies recorded by
-> the projects credited below. Start with the read-only commands and watch it behave.
+> **Status: alpha, run on one real valve.** Pairing, every read, starting a preset, running an
+> outlet and both stops were run against one Mira Platinum, a handful of times, attended:
+> from macOS, and through an ESPHome proxy under Home Assistant. Nothing has run on a local
+> Linux adapter or on another model; those paths are tested only against a simulation and
+> against replies recorded by the projects credited below. Start with the read-only commands
+> and watch it behave.
 
 > **This drives plumbing that produces hot water.** Never run it unattended. The library
 > cannot stop the water if the link drops or your program exits: the valve's own maximum run

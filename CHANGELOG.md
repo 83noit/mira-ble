@@ -9,8 +9,11 @@ layer; patch releases do not. Pin the exact version you have tested.
 
 ## [Unreleased]
 
-> **Note:** run by hand on one Mira Platinum from macOS (pairing, reads, preset start, outlet
-> command, both stops). Not yet run through a proxy, on Linux, or on another model.
+## [0.1.0] - 2026-11-16
+
+> **Note:** run on one Mira Platinum only: by hand from macOS (pairing, reads, preset start,
+> outlet command, both stops) and through an ESPHome proxy under Home Assistant. Not yet run on
+> a local Linux adapter or on another model.
 
 ### Added
 
