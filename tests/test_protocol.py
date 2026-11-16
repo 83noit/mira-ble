@@ -9,7 +9,7 @@ import pytest
 
 from mira_ble import protocol
 from mira_ble.exceptions import ProtocolError, UnsafeValue
-from mira_ble.protocol import Opcode, Outlet, OutletKind, Preset
+from mira_ble.protocol import Opcode, Outlet, OutletKind, Phase, Preset
 from mira_ble.testing import (
     APP_SET_38C_16LPM_BOTH,
     APP_SET_38C_16LPM_OUTLET_2,
@@ -20,6 +20,9 @@ from mira_ble.testing import (
     NAME,
     OUTLET_1_CONFIG,
     OUTLET_2_CONFIG,
+    PLATINUM_OUTLET_FROM_HOLD,
+    PLATINUM_PRESET_BY_BLE,
+    PLATINUM_PRESET_PICKED,
     PLATINUM_READY,
     PLATINUM_REST,
     PLATINUM_SHOWER,
@@ -271,6 +274,33 @@ def test_the_phases_recorded_on_a_platinum(
     assert state.target_temperature == 40.0
     assert state.flow_setting == 8.0
     assert not state.fault
+
+
+@pytest.mark.parametrize(
+    ("payload", "phase", "preset", "remaining", "warming_up"),
+    [
+        (STATE_IDLE, Phase.REST, 0, None, False),
+        (STATE_RUNNING, Phase.RUNNING, 0, None, False),
+        (PLATINUM_REST, Phase.REST, 0, None, False),
+        (PLATINUM_PRESET_PICKED, Phase.REST, 3, 300, False),
+        (PLATINUM_WARM_UP, Phase.WARMING_UP, 0, None, True),
+        (PLATINUM_READY, Phase.PAUSED, 0, None, False),
+        (PLATINUM_SHOWER, Phase.PRESET, 4, 477, False),
+        (PLATINUM_PRESET_BY_BLE, Phase.PRESET, 6, 356, False),
+        (PLATINUM_OUTLET_FROM_HOLD, Phase.RUNNING, 0, None, False),
+        (PLATINUM_STOPPING, Phase.RUNNING, 0, None, False),  # held, but water still runs
+    ],
+)
+def test_phase_preset_and_time_remaining(
+    payload: bytes, phase: Phase, preset: int, remaining: int | None, warming_up: bool
+) -> None:
+    state = protocol.decode_state(payload)
+    assert state.phase is phase
+    assert (state.preset, state.time_remaining, state.warming_up) == (
+        preset,
+        remaining,
+        warming_up,
+    )
 
 
 def test_fault_flag_and_error_code() -> None:

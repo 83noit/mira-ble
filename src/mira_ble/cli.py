@@ -52,6 +52,12 @@ def _state_line(state: State) -> str:
     parts.append(f"flow {state.flow:g} of {state.flow_setting:g} L/min")
     if state.volume:
         parts.append(f"{state.volume} L used")
+    if state.warming_up:
+        parts.append("warming up")
+    if state.preset:
+        parts.append(f"preset {state.preset}")
+    if state.time_remaining is not None:
+        parts.append(f"{_span(state.time_remaining)} left")
     if state.fault:
         parts.append(f"FAULT (code {state.error_code})")
     return "  ".join(parts)
@@ -209,7 +215,11 @@ async def _start(args: argparse.Namespace) -> int:
     async def action(valve: MiraValve) -> None:
         before = await valve.read_state()
         try:
-            state = await valve.run_preset(args.slot, before=before)
+            state = await (
+                valve.run_preset_through(args.slot, before=before)
+                if args.through
+                else valve.run_preset(args.slot, before=before)
+            )
         except (NotConfirmed, MiraError, BleakError) as err:
             await _stop_after_failure(valve, err)
             raise MiraError("preset start failed") from err
@@ -297,7 +307,14 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--duration", type=float, default=None, help="stop after this many seconds")
     add("outlets-config", _outlets_config, "read each outlet's limits and defaults")
     add("presets", _presets, "list the stored presets")
-    add("start", _start, "run a stored preset").add_argument("slot", type=int)
+    start = add("start", _start, "run a stored preset")
+    start.add_argument("slot", type=int)
+    start.add_argument(
+        "--through",
+        action="store_true",
+        help="wait for the warm-up to finish, then start the preset proper (water keeps "
+        "running for the preset's duration)",
+    )
     run = add("run", _run, "run outlets at a temperature and flow")
     run.add_argument("--outlet", type=int, action="append", required=True, choices=(1, 2, 3))
     run.add_argument("--temperature", type=float, required=True, help="degrees Celsius")

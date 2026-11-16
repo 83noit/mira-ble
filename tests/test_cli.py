@@ -206,6 +206,22 @@ def test_start_a_preset(fake: FakeValve, capsys: pytest.CaptureFixture[str]) -> 
     assert "outlet 1" in capsys.readouterr().out
 
 
+def test_start_through_carries_a_preset_past_its_warm_up(
+    fake: FakeValve, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake.warm_up = 2
+    assert cli.main(["start", ADDRESS, "1", "--through"]) == 0
+    out = capsys.readouterr().out
+    assert "preset 1" in out
+    assert "30:00 left" in out
+
+
+def test_a_warm_up_is_shown(fake: FakeValve, capsys: pytest.CaptureFixture[str]) -> None:
+    fake.warm_up = 5
+    assert cli.main(["start", ADDRESS, "1"]) == 0
+    assert "warming up" in capsys.readouterr().out
+
+
 def test_a_preset_with_no_outlet_bit_is_shown_as_running(
     fake: FakeValve, capsys: pytest.CaptureFixture[str]
 ) -> None:

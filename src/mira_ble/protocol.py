@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import IntEnum, IntFlag
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Final
 
 from mira_ble.exceptions import ProtocolError, UnsafeValue
@@ -47,6 +47,21 @@ class Opcode(IntEnum):
     SET_OUTLETS = 0xAB
     RUN_PRESET = 0xB1
     WRITE_PRESET = 0xDD
+
+
+class Phase(StrEnum):
+    """What the valve is doing, in one word (see :attr:`State.phase`)."""
+
+    REST = "rest"
+    """Nothing runs and nothing is held."""
+    WARMING_UP = "warming_up"
+    """A preset is running water up to temperature; the valve holds when it gets there."""
+    PAUSED = "paused"
+    """Held with the water off: ready after a warm-up, or stopped. Rest follows by itself."""
+    PRESET = "preset"
+    """A preset is running and the valve is counting its duration down."""
+    RUNNING = "running"
+    """Water runs with no preset timer: an outlet opened directly."""
 
 
 class Outlet(IntFlag):
@@ -97,6 +112,8 @@ class OutletKind(IntEnum):
 MAX_OUTLETS: Final = 3
 OUTLET_MASK: Final = 0x07
 OUTLET_FLAG_HELD: Final = 0x40
+STATE_PRESET_MASK: Final = 0x1F
+STATE_FLAG_WARMING_UP: Final = 0x10
 """Bit 6 of the state's outlet byte: the valve holds a run with no outlet bit set.
 
 The vendor app calls it "paused". On a Mira Platinum it was measured during a running preset,
@@ -185,6 +202,25 @@ class State:
     flow: float
     """Flow reached in L/min, as the valve reports it (byte 16), whatever the outlet bits say."""
     raw: bytes = field(repr=False, default=b"")
+    preset: int = 0
+    """The preset slot the valve says is running, or 0 (byte 1, low five bits; the vendor app
+    reads it so). Measured on a Mira Platinum: set only while a preset proper runs, not
+    during its warm-up, and not for a run started by an outlet command."""
+    time_remaining: int | None = None
+    """Seconds the running preset has left (bytes 8-9, low twelve bits); None with no preset."""
+    warming_up: bool = False
+    """Bit 4 of byte 6: measured on a Mira Platinum while a preset warms the water up."""
+
+    @property
+    def phase(self) -> Phase:
+        """Sum the state up as one :class:`Phase`."""
+        if not self.running:
+            return Phase.PAUSED if self.held else Phase.REST
+        if self.warming_up:
+            return Phase.WARMING_UP
+        if self.preset:
+            return Phase.PRESET
+        return Phase.RUNNING
 
     @property
     def running(self) -> bool:
@@ -513,6 +549,7 @@ def decode_state(payload: bytes) -> State:
     outlet_byte = payload[13]
     error_code = payload[17]
     water = int.from_bytes(payload[14:16], "big") / 10
+    preset = payload[1] & STATE_PRESET_MASK
     return State(
         outlets=Outlet(outlet_byte & OUTLET_MASK),
         held=bool(outlet_byte & OUTLET_FLAG_HELD),
@@ -524,6 +561,9 @@ def decode_state(payload: bytes) -> State:
         flow_setting=flow_from_wire(payload[12]),
         flow=flow_from_wire(payload[16]),
         raw=bytes(payload),
+        preset=preset,
+        time_remaining=(((payload[8] & 0x0F) << 8) | payload[9]) if preset else None,
+        warming_up=bool(payload[6] & STATE_FLAG_WARMING_UP),
     )
 
 

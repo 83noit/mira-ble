@@ -18,7 +18,7 @@ from mira_ble.exceptions import (
     UnsafeValue,
 )
 from mira_ble.frame import Frame
-from mira_ble.protocol import Opcode, Outlet, Preset
+from mira_ble.protocol import Opcode, Outlet, Phase, Preset, State
 from mira_ble.testing import (
     NAME,
     OUTLET_1_CONFIG,
@@ -253,6 +253,108 @@ async def test_a_stop_the_valve_acknowledged_but_ignored_is_never_confirmed(
     assert caught.value.state is not None
     assert caught.value.state.active
     assert fake.outlets == 1
+
+
+async def test_a_preset_warms_up_holds_and_runs_on_the_second_command(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    """Measured on a Mira Platinum."""
+    fake.warm_up = 3
+    state = await valve.run_preset(1)
+    assert state is not None
+    assert state.phase is Phase.WARMING_UP
+    assert state.outlets is Outlet.SECOND  # the recorded preset's outlet
+    for _ in range(3):
+        state = await valve.read_state()
+    assert state.phase is Phase.PAUSED
+    assert not state.running
+    state = await valve.run_preset(1, before=state)
+    assert state is not None
+    assert state.phase is Phase.PRESET
+    assert (state.preset, state.time_remaining) == (1, 1800)
+
+
+async def test_an_outlet_command_during_the_hold_starts_a_plain_run(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    fake.warm_up = 1
+    await valve.run_preset(1)
+    assert (await valve.read_state()).phase is Phase.PAUSED
+    state = await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    assert state is not None
+    assert state.phase is Phase.RUNNING
+    assert (state.preset, state.time_remaining) == (0, None)
+
+
+async def test_run_preset_through_sends_the_command_again_at_the_hold(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    fake.warm_up = 4
+    state = await valve.run_preset_through(1)
+    assert state.phase is Phase.PRESET
+    assert state.preset == 1
+    assert _commands(fake) == [protocol.run_preset_request(1).encode()] * 2
+
+
+async def test_run_preset_through_waits_out_the_water_draining_after_the_warm_up(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    """Found on a Mira Platinum: held, no outlet bit, flow still read for two seconds. That
+    was taken for a valve running the preset with no warm-up, and the second command never
+    went out."""
+    fake.warm_up, fake.drain = 3, 6
+    state = await valve.run_preset_through(1)
+    assert state.phase is Phase.PRESET
+    assert _commands(fake) == [protocol.run_preset_request(1).encode()] * 2
+
+
+async def test_run_preset_through_from_the_hold_needs_one_command(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    fake.warm_up = 1
+    await valve.run_preset(1)
+    before = await valve.read_state()
+    fake.sent.clear()
+    state = await valve.run_preset_through(1, before=before)
+    assert state.phase is Phase.PRESET
+    assert _commands(fake) == [protocol.run_preset_request(1).encode()]
+
+
+async def test_run_preset_through_leaves_a_valve_with_no_warm_up_alone(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    state = await valve.run_preset_through(2)
+    assert state.phase is Phase.RUNNING
+    assert _commands(fake) == [protocol.run_preset_request(2).encode()]
+
+
+async def test_run_preset_through_gives_up_on_a_warm_up_that_never_ends(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    fake.warm_up = 10**6
+    with pytest.raises(NotConfirmed, match="still warming up") as caught:
+        await valve.run_preset_through(1, timeout=0.01)
+    assert caught.value.state is not None
+    assert caught.value.state.running  # the caller must stop it
+
+
+async def test_run_preset_through_reports_a_preset_that_ended_in_its_warm_up(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    """Someone stopped it at the wall, or the hold timed out between two reads."""
+    fake.warm_up = 5
+    real = valve.run_preset
+
+    async def start_then_rest(slot: int, **kwargs: object) -> State | None:
+        state = await real(slot, **kwargs)  # type: ignore[arg-type]
+        fake.rest()
+        return await valve.read_state() if state else None
+
+    with (
+        patch.object(valve, "run_preset", start_then_rest),
+        pytest.raises(NotConfirmed, match="ended before"),
+    ):
+        await valve.run_preset_through(1)
 
 
 async def test_a_preset_with_no_outlet_bit_is_not_taken_for_stopped(

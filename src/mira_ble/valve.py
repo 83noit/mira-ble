@@ -59,6 +59,8 @@ Outlets have been reported to show 3 to 5 s after the write, most of it the valv
 CONFIRM_INTERVAL: Final = 0.5
 """Seconds between the state reads that confirm a command."""
 STOPPED_READS: Final = 2
+WARM_UP_TIMEOUT: Final = 180.0
+"""How long :meth:`MiraValve.run_preset_through` waits for a warm-up to finish."""
 """Consecutive reads that must show the valve at rest before a stop counts as confirmed."""
 PRESET_FIELDS_END: Final = 40
 """Bytes of a preset that carry decoded fields; the rest is padding nobody reads."""
@@ -309,6 +311,46 @@ class MiraValve:
             return state.held and not was_held
 
         return await self._confirm(started, f"preset {slot}")
+
+    async def run_preset_through(
+        self, slot: int, *, before: State | None = None, timeout: float = WARM_UP_TIMEOUT
+    ) -> State:
+        """Start a preset and carry it past its warm-up, so that it runs with its timer.
+
+        Measured on a Mira Platinum: the command first warms the water up, then the valve
+        shuts it off and holds; the same command sent again during the hold starts the
+        preset proper, and the valve counts its duration down. This waits for the hold (up
+        to ``timeout`` seconds) and sends the second command. A valve that runs the preset
+        at once, with no warm-up, is left alone.
+
+        Water runs for the whole of the preset's duration after this: nobody has to be at
+        the shower for it to start.
+        """
+        state = await self.run_preset(slot, before=before)
+        assert state is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        settled = 0
+        while True:
+            if state.running and state.preset == slot:
+                return state
+            if state.held and not state.running:
+                await self._command(protocol.run_preset_request(slot))
+                return await self._confirm(
+                    lambda s: s.running and not s.warming_up, f"preset {slot} after its warm-up"
+                )
+            if not state.active:
+                raise NotConfirmed(f"preset {slot} ended before its warm-up finished", state)
+            # An open outlet with no warm-up flag is a valve that runs presets at once. The
+            # outlet bit matters: as a warm-up ends the valve is held, with no outlet bit,
+            # while the water drains for a couple of seconds, and that is not a run.
+            settled = settled + 1 if state.outlets and not state.warming_up else 0
+            if settled >= STOPPED_READS:
+                return state
+            if loop.time() + CONFIRM_INTERVAL > deadline:
+                raise NotConfirmed(f"preset {slot} was still warming up after {timeout:g} s", state)
+            await asyncio.sleep(CONFIRM_INTERVAL)
+            state = await self.read_state()
 
     async def stop(self, *, confirm: bool = True) -> State | None:
         """Close every outlet, including a running preset.

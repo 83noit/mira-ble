@@ -96,6 +96,9 @@ someone uses the shower at the wall, before sending anything.
   `--max-temperature` (default 45 °C; give it before the command name).
 - If a `run` or `start` cannot be confirmed, the tool sends a stop before exiting and says
   so; if it prints `CHECK THE SHOWER`, go and look.
+- `start` sends the preset command once. On a Mira Platinum that warms the water up and then
+  holds, waiting; `start --through` waits for the hold and sends the command again, which
+  runs the preset with its own timer (water then runs for the preset's whole duration).
 - `presets` exits with an error and a reason when it could read none; some valves only
   answer preset reads while running.
 - `-v` logs every frame, from this package only. Frames carry the valve's name and serial
@@ -150,6 +153,11 @@ Units are degrees Celsius, litres per minute, seconds and litres throughout.
   first sends the vendor app's pause (the valve's own temperature and flow with the hold
   bit), which leaves the valve's settings alone; if water still runs it sends the all-zero
   stop, then "run preset 0".
+- **One word for what the valve is doing.** `State.phase` is `rest`, `warming_up`, `paused`,
+  `preset` or `running`; `State.preset` and `State.time_remaining` give the running preset
+  and the seconds it has left by the valve's own count, and `State.volume` the litres used.
+  `run_preset()` sends the preset command once; `run_preset_through()` carries a preset past
+  the warm-up hold measured on a Mira Platinum.
 - **Complete state.** A command names every outlet that should run; any other is switched
   off. Which fixture is outlet 1 depends on the plumbing: `outlets-config` and `presets` tell.
 - **Replies are matched by shape.** A reply carries no identifier, so each read accepts only

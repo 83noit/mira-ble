@@ -34,6 +34,7 @@ from mira_ble.protocol import (
     Outlet,
     OutletConfig,
     OutletKind,
+    Phase,
     Preset,
     State,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "OutletConfig",
     "OutletKind",
     "PairingRequired",
+    "Phase",
     "Preset",
     "ProtocolError",
     "ReplyTest",

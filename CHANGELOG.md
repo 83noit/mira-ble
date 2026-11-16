@@ -24,6 +24,10 @@ layer; patch releases do not. Pin the exact version you have tested.
 - Confirmed control: run outlets, run a preset, and a stop that sends the vendor app's pause
   first (keeping the valve's settings), then the all-zero stop, then "run preset 0";
   confirmation waits up to 8 s for the valve to act. Preset write and delete.
+- `State.phase`, `State.preset`, `State.time_remaining` and `State.warming_up`, and
+  `run_preset_through()` / `mira-ble start --through` for valves that warm a preset up and
+  then hold (measured on a Mira Platinum: the same preset command during the hold starts the
+  preset proper).
 - Temperature limits enforced before anything is written.
 - `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
   `outlets-config` and `presets`.

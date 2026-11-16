@@ -48,6 +48,12 @@ PLATINUM_SHOWER = _hex("31 24 00 02 00 1d 00 00 61 dd 0d 90 20 01 01 92 1d 01")
 """The shower proper after the outlet button: preset 4, 477 s left, 7.25 L/min, 2 L so far."""
 PLATINUM_STOPPING = _hex("31 20 00 02 00 1d 00 00 60 00 01 90 20 40 01 9d 1d 01")
 """Two seconds after a stop at the wall: held, no outlet bit, flow not yet zero."""
+PLATINUM_PRESET_PICKED = _hex("31 23 00 00 00 00 00 00 a1 2c 01 86 30 00 01 59 00 01")
+"""At rest, as preset 3 (5:00) is picked on the wall controller: its number and duration show."""
+PLATINUM_PRESET_BY_BLE = _hex("31 26 00 02 00 18 00 00 61 64 0d 7c 18 01 01 80 18 01")
+"""Preset 6 proper, started by a second preset command during the hold: 356 s of 360 left."""
+PLATINUM_OUTLET_FROM_HOLD = _hex("31 20 00 02 00 1e 00 00 60 00 0d 90 20 01 01 9a 1e 01")
+"""A plain run started by an outlet command during the hold: no preset number, no countdown."""
 STATE_RAMPING = _hex("21 c0 00 00 00 1e 00 00 00 00 01 c2 30 01 00 fd 1e 01")
 """Outlet 1 just after a start: 12 L/min commanded, 7.5 reached, target 45.0 C. (ha-mira-mode)"""
 STATE_TARGET_WITH_FLAGS = _hex("21 20 00 00 00 12 00 00 00 00 0d c2 32 01 00 f6 12 01")
@@ -155,7 +161,13 @@ class FakeValve:
     * ``pause_ignored`` / ``pause_rejected``: what it does with the app's pause (an outlet
       command with only the hold bit). By default the water stops and the valve stays held,
       as a Mira Platinum was measured to for two minutes; :meth:`rest` ends the hold;
-    * ``volume``: state byte 3, the litres a Platinum counts while it runs;
+    * ``volume``: state bytes 2-3, the litres a Platinum counts while it runs;
+    * ``warm_up``: how many state reads a preset's warm-up lasts. Above zero the valve runs
+      presets as a Mira Platinum was measured to: water runs for the warm-up, then it holds;
+      the same preset command during the hold starts the preset proper, with its number and
+      its countdown in the state; an outlet command during the hold starts a plain run;
+    * ``drain``: how many state reads still show flow after a warm-up ends in the hold (a
+      Platinum showed two seconds of it, held and with no outlet bit);
     * ``connect_error``: raised by :meth:`connect`.
     """
 
@@ -175,6 +187,14 @@ class FakeValve:
     flowing: bool = False
     """Water runs although no outlet bit is set (see ``hidden_outlet``)."""
     volume: int = 0
+    warm_up: int = 0
+    drain: int = 0
+    draining: int = 0
+    """State reads left before the flow of a finished warm-up reads zero."""
+    warming: int = 0
+    """State reads left in the present warm-up."""
+    preset_running: int = 0
+    remaining: int = 0
     target_tenths: int = 0
     flow_byte: int = 0x10
     idle_target_tenths: int = 0
@@ -216,6 +236,7 @@ class FakeValve:
     def rest(self) -> None:
         """End a hold, as the valve does by itself after two minutes."""
         self.outlets, self.held, self.flowing, self.volume = 0, False, False, 0
+        self.warming, self.preset_running, self.remaining, self.draining = 0, 0, 0, 0
 
     async def connect(self) -> None:
         """Pretend to connect, or fail as ``connect_error`` says."""
@@ -239,8 +260,12 @@ class FakeValve:
         """Return the state reply for the valve's present condition."""
         payload = bytearray(STATE_IDLE)
         active = self.active
-        payload[3] = self.volume
+        payload[1] = (payload[1] & 0xE0) | self.preset_running
+        payload[2:4] = self.volume.to_bytes(2, "big")
+        payload[6] = 0x10 if self.warming else 0x00
         payload[8] = 0x00 if active else 0x80
+        if self.preset_running:
+            payload[8:10] = (0x6000 | self.remaining).to_bytes(2, "big")
         target = self.target_tenths if active else self.idle_target_tenths
         payload[10:12] = target.to_bytes(2, "big")
         payload[12] = self.flow_byte if active else self.idle_flow_byte
@@ -291,7 +316,16 @@ class FakeValve:
             setattr(self, name, value)
 
     def _tick(self) -> None:
-        """Count a state read against every queued change."""
+        """Count a state read against every queued change and against a warm-up."""
+        if self.draining:
+            self.draining -= 1
+            if not self.draining:
+                self.flowing = False
+        if self.warming:
+            self.warming -= 1
+            if not self.warming:
+                self.outlets, self.held = 0, True
+                self.draining, self.flowing = self.drain, bool(self.drain)
         waiting: list[tuple[int, dict[str, int | bool]]] = []
         for reads_left, changes in self._queued:
             if reads_left <= 1:
@@ -356,7 +390,13 @@ class FakeValve:
             return _OK
         if pause:
             self._apply(
-                outlets=0, held=True, flowing=False, target_tenths=tenths, flow_byte=payload[2]
+                outlets=0,
+                held=True,
+                flowing=False,
+                target_tenths=tenths,
+                flow_byte=payload[2],
+                warming=0,
+                preset_running=0,
             )
             return _OK
         if outlets:
@@ -366,9 +406,11 @@ class FakeValve:
                 flowing=False,
                 target_tenths=tenths,  # zero is "cold": the valve does not keep the old target
                 flow_byte=payload[2],
+                warming=0,
+                preset_running=0,
             )
         else:
-            self._apply(outlets=0, held=False, flowing=False)
+            self._apply(outlets=0, held=False, flowing=False, warming=0, preset_running=0)
         return _OK
 
     def _run_preset(self, payload: bytes) -> bytes:
@@ -393,5 +435,13 @@ class FakeValve:
             changes |= {"outlets": 0, "held": True, "flowing": True}
         else:
             changes |= {"outlets": (flags >> 2) & 0x07, "held": False, "flowing": False}
+            if self.warm_up and self.held and not self.running:
+                changes |= {
+                    "preset_running": slot,
+                    "remaining": int.from_bytes(stored[33:35], "big"),
+                    "warming": 0,
+                }
+            elif self.warm_up:
+                changes |= {"warming": self.warm_up, "preset_running": 0}
         self._apply(**changes)
         return _OK
