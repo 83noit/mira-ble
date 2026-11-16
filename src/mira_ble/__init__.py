@@ -41,7 +41,7 @@ from mira_ble.protocol import (
 from mira_ble.transport import BleTransport, ReplyTest, Transport
 from mira_ble.valve import DEFAULT_MAX_TEMPERATURE, NO_ANSWER, Capabilities, MiraValve
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "ABSOLUTE_MAX_FLOW",

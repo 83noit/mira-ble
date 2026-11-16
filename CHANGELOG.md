@@ -9,6 +9,14 @@ layer; patch releases do not. Pin the exact version you have tested.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-16
+
+### Fixed
+
+- `State.phase` is `paused` as soon as the valve is held with no outlet open. The second or
+  two of flow still measured as a warm-up ends or after a stop no longer shows as `running`
+  (seen in Home Assistant on a real shower). `State.running` is unchanged.
+
 ## [0.1.0] - 2026-11-16
 
 > **Note:** run on one Mira Platinum only: by hand from macOS (pairing, reads, preset start,

@@ -58,10 +58,17 @@ If the valve is reset, or the device is removed from it in the app, the adapter 
 offering keys the valve no longer accepts. Forget the valve on the adapter and pair again
 (`remove_bluez_bond()` does that on Linux).
 
-**ESPHome proxies built on ESP-IDF 5.5.6 (ESPHome 2026.10.x) forget a bond after the first
-connection** ([esphome#21880](https://github.com/esphome/esphome/issues/21880)): the second
-connection is refused as if the valve had never been paired. Pin the proxy to ESP-IDF 5.5.5
-or use a release with the fix.
+**An ESPHome proxy can lose the bond, in two different ways:**
+
+- *A connection that drops while it is being encrypted erases the bond from the proxy's
+  flash.* This is how ESP-IDF's Bluetooth stack is built, on every version; it happened once
+  in about 150 connections on a marginal link (-76 dBm). The valve then has to be paired
+  again. A strong signal makes it rare. From ESP-IDF 5.5.6 the proxy can be built with
+  `CONFIG_BT_BLE_SMP_REMOVE_BOND_ON_PAIR_FAIL_AS_CENTRAL: "n"` to keep the bond (untested
+  here).
+- *ESP-IDF 5.5.6 (ESPHome 2026.10.x) forgets a bond after the first connection*, until the
+  proxy restarts ([esphome#21880](https://github.com/esphome/esphome/issues/21880)). Pin the
+  proxy to ESP-IDF 5.5.5, or use ESPHome 2026.11 or later, which works around it.
 
 ## Command line
 

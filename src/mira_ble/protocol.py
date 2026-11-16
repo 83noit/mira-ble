@@ -57,7 +57,7 @@ class Phase(StrEnum):
     WARMING_UP = "warming_up"
     """A preset is running water up to temperature; the valve holds when it gets there."""
     PAUSED = "paused"
-    """Held with the water off: ready after a warm-up, or stopped. Rest follows by itself."""
+    """Held with no outlet open: ready after a warm-up, or stopped. Rest follows by itself."""
     PRESET = "preset"
     """A preset is running and the valve is counting its duration down."""
     RUNNING = "running"
@@ -213,9 +213,17 @@ class State:
 
     @property
     def phase(self) -> Phase:
-        """Sum the state up as one :class:`Phase`."""
+        """Sum the state up as one :class:`Phase`.
+
+        Held with no outlet open is paused even while the last of the water drains (a
+        second or two of measured flow, seen at the end of a warm-up and after a stop);
+        :attr:`running` stays true for that moment, because it answers a different
+        question: is any water still coming out.
+        """
+        if self.held and not self.outlets:
+            return Phase.PAUSED
         if not self.running:
-            return Phase.PAUSED if self.held else Phase.REST
+            return Phase.REST
         if self.warming_up:
             return Phase.WARMING_UP
         if self.preset:

@@ -288,7 +288,7 @@ def test_the_phases_recorded_on_a_platinum(
         (PLATINUM_SHOWER, Phase.PRESET, 4, 477, False),
         (PLATINUM_PRESET_BY_BLE, Phase.PRESET, 6, 356, False),
         (PLATINUM_OUTLET_FROM_HOLD, Phase.RUNNING, 0, None, False),
-        (PLATINUM_STOPPING, Phase.RUNNING, 0, None, False),  # held, but water still runs
+        (PLATINUM_STOPPING, Phase.PAUSED, 0, None, False),  # held; the last water drains
     ],
 )
 def test_phase_preset_and_time_remaining(
