@@ -92,6 +92,71 @@ async def test_the_adapter_actually_used_is_reported(fake_establish: FakeClient)
     assert local.source == "/org/bluez/hci0"
 
 
+class _Scanner:
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+
+class _HaLikeClient:
+    """Stands in for habluetooth's client: it chooses a scanner in a private method."""
+
+    chosen = "proxy-b"
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def _async_get_best_available_backend_and_device(self, _manager: Any) -> Any:
+        return type("Backend", (), {"scanner": _Scanner(self.chosen)})()
+
+
+async def test_a_refusal_is_pinned_on_the_proxy_that_was_asked() -> None:
+    """The device was last heard through one proxy; Home Assistant connected through another
+    and was refused. The refusal says nothing about the first proxy's bond."""
+
+    async def establish(cls: Any, _device: Any, _name: str, **_kwargs: Any) -> Any:
+        cls()._async_get_best_available_backend_and_device(None)
+        raise BleakError("Pairing failed due to error: 82")
+
+    transport = BleTransport(_device(), max_attempts=1)  # heard through 00:11:22:33:44:55
+    with (
+        patch.object(
+            transport_module.bleak_retry_connector, "BleakClientWithServiceCache", _HaLikeClient
+        ),
+        patch.object(transport_module, "establish_connection", establish),
+        pytest.raises(PairingRequired),
+    ):
+        await transport.connect()
+    assert transport.source == "proxy-b"
+
+
+async def test_a_change_in_home_assistants_internals_falls_back_to_where_it_was_heard() -> None:
+    class Changed(_HaLikeClient):
+        def _async_get_best_available_backend_and_device(self, _manager: Any) -> Any:
+            return object()  # no scanner any more
+
+    async def establish(cls: Any, _device: Any, _name: str, **_kwargs: Any) -> Any:
+        cls()._async_get_best_available_backend_and_device(None)
+        raise BleakError("Pairing failed due to error: 82")
+
+    transport = BleTransport(_device(), max_attempts=1)
+    with (
+        patch.object(
+            transport_module.bleak_retry_connector, "BleakClientWithServiceCache", Changed
+        ),
+        patch.object(transport_module, "establish_connection", establish),
+        pytest.raises(PairingRequired),
+    ):
+        await transport.connect()
+    assert transport.source == "00:11:22:33:44:55"
+
+
+def test_a_plain_bleak_client_is_not_wrapped() -> None:
+    class Plain:
+        pass
+
+    assert transport_module._source_recording(Plain) is Plain
+
+
 async def test_notifications_are_stopped_before_the_link_is_dropped(
     fake_establish: FakeClient,
 ) -> None:

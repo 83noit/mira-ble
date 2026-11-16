@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -101,6 +102,42 @@ async def test_agent_is_skipped(device: BLEDevice, manager: FakeManager) -> None
         async with bluez.bluez_pairing_agent(device):
             pass
     assert manager._bus is None or not manager._bus.calls
+
+
+async def test_agents_are_held_one_at_a_time() -> None:
+    """BlueZ has one default agent for the whole system."""
+    bus = FakeBus()
+    other = BLEDevice(
+        "11:22:33:44:55:66", "Other valve", {"path": "/org/bluez/hci0/dev_11_22_33_44_55_66"}
+    )
+    order: list[str] = []
+
+    async def hold(device: BLEDevice, name: str) -> None:
+        async with bluez.bluez_pairing_agent(device):
+            order.append(f"{name} in")
+            await asyncio.sleep(0)
+            order.append(f"{name} out")
+
+    with _manager(FakeManager(bus)):
+        await asyncio.gather(hold(_bluez_device(), "a"), hold(other, "b"))
+    assert order == ["a in", "a out", "b in", "b out"]
+    assert not bus.exported
+
+
+def test_the_agent_lock_is_per_event_loop() -> None:
+    """An asyncio.Lock breaks once it has been contended under a second loop."""
+
+    async def lock() -> asyncio.Lock:
+        return bluez._agent_lock()
+
+    first, second = asyncio.new_event_loop(), asyncio.new_event_loop()
+    try:
+        one = first.run_until_complete(lock())
+        assert first.run_until_complete(lock()) is one
+        assert second.run_until_complete(lock()) is not one
+    finally:
+        first.close()
+        second.close()
 
 
 async def test_no_bluez_still_pairs() -> None:

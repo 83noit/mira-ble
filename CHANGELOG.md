@@ -28,6 +28,9 @@ layer; patch releases do not. Pin the exact version you have tested.
   `run_preset_through()` / `mira-ble start --through` for valves that warm a preset up and
   then hold (measured on a Mira Platinum: the same preset command during the hold starts the
   preset proper).
+- The proxy or adapter Home Assistant chose is recorded for every connection attempt,
+  refused ones included, so a refusal is not pinned on the proxy that merely last heard the
+  valve. One BlueZ pairing agent at a time. Both ported from grundfos-ble.
 - Temperature limits enforced before anything is written.
 - `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
   `outlets-config` and `presets`.

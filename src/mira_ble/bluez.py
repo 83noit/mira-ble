@@ -18,8 +18,10 @@ This module does not use ``from __future__ import annotations``: dbus_fast's ``@
 reads the D-Bus signature from the annotations when the class is defined.
 """
 
+import asyncio
 import contextlib
 import logging
+import weakref
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Final
 
@@ -34,6 +36,22 @@ AGENT_PATH_PREFIX: Final = "/org/mira_ble/agent"
 BLUEZ_SERVICE: Final = "org.bluez"
 AGENT_MANAGER_INTERFACE: Final = "org.bluez.AgentManager1"
 ADAPTER_INTERFACE: Final = "org.bluez.Adapter1"
+
+
+_agent_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+"""One agent at a time, as BlueZ has a single default agent for the whole system. One lock per
+event loop: an ``asyncio.Lock`` binds to the loop it is first contended on. Ported from
+grundfos-ble (same author, MIT). The lock is this library's own: another library registering
+a default agent at the same moment is not held back by it."""
+
+
+def _agent_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if (lock := _agent_locks.get(loop)) is None:
+        lock = _agent_locks[loop] = asyncio.Lock()
+    return lock
 
 
 def bluez_device_path(device: "BLEDevice") -> str | None:
@@ -114,8 +132,13 @@ async def bluez_pairing_agent(device: "BLEDevice") -> AsyncGenerator[None]:
     if path is None or bluez is None or bluez[0].is_paired(path):
         yield
         return
-    bus = bluez[1]
-    # One path per device, so two valves pairing at once do not collide.
+    async with _agent_lock(), _registered_agent(bluez[1], path):
+        yield
+
+
+@contextlib.asynccontextmanager
+async def _registered_agent(bus: "MessageBus", path: str) -> AsyncGenerator[None]:
+    # One path per device, so an agent left behind by a crash is not taken for this one.
     agent_path = f"{AGENT_PATH_PREFIX}/{path.rsplit('/', 1)[-1]}"
     from dbus_fast.annotations import DBusObjectPath, DBusStr, DBusUInt32
     from dbus_fast.errors import DBusError

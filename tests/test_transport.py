@@ -399,7 +399,9 @@ async def test_a_stale_service_cache_is_cleared() -> None:
     establish, _ = _establish_sequence(client)
     with (
         patch.object(transport_module, "establish_connection", establish),
-        patch.object(transport_module, "BleakClientWithServiceCache", CachedClient),
+        patch.object(
+            transport_module.bleak_retry_connector, "BleakClientWithServiceCache", CachedClient
+        ),
         pytest.raises(MiraConnectionError),
     ):
         await BleTransport(_device()).connect()

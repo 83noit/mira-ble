@@ -24,15 +24,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import re
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Final, Protocol, Self
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Final, Protocol, Self
 
+import bleak_retry_connector
 from bleak import BleakClient
 from bleak.exc import BleakCharacteristicNotFoundError, BleakError
-from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from bleak_retry_connector import establish_connection
 
 from mira_ble.bluez import bluez_device_path, bluez_pairing_agent
 from mira_ble.const import NOTIFY_CHARACTERISTIC_UUID, WRITE_CHARACTERISTIC_UUID
@@ -50,6 +53,39 @@ if TYPE_CHECKING:
     from bleak.backends.device import BLEDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+_attempt_source: ContextVar[list[str | None] | None] = ContextVar(
+    "mira_ble_attempt_source", default=None
+)
+"""Where the client class below records the Bluetooth source of the current attempt."""
+
+
+@functools.cache
+def _source_recording(base: Any) -> Any:  # noqa: ANN401 - a class only known at run time
+    """Wrap Home Assistant's client class so that it records the scanner it connects through.
+
+    Home Assistant (habluetooth) replaces bleak's client with one that picks a local adapter
+    or a proxy at connect time, by signal and free slots, and keeps the choice private until
+    the connection succeeds. A refused attempt must be pinned on the proxy that was actually
+    asked, so this subclass reads the choice from that private method as it is made. With
+    plain bleak, or if the method goes away, ``base`` is returned unchanged and the source
+    falls back to where the device was last heard.
+
+    Ported from grundfos-ble (same author, MIT).
+    """
+    if not hasattr(base, "_async_get_best_available_backend_and_device"):
+        return base
+
+    class SourceRecordingClient(base):  # type: ignore[misc]
+        def _async_get_best_available_backend_and_device(self, manager: Any) -> Any:  # noqa: ANN401
+            backend = super()._async_get_best_available_backend_and_device(manager)
+            if (slot := _attempt_source.get()) is not None:
+                with contextlib.suppress(Exception):
+                    slot[0] = backend.scanner.source
+            return backend
+
+    return SourceRecordingClient
+
 
 type ReplyTest = Callable[[bytes], bool]
 """Says whether a reply payload has the shape a request expects."""
@@ -201,7 +237,9 @@ class BleTransport:
         """The adapter or proxy the last connection attempt went through, when known.
 
         The bond lives on one adapter, so a refusal only says something about the bond when
-        it came through that adapter.
+        it came through that adapter. Under Home Assistant this is the scanner chosen for
+        the attempt, refused attempts included; elsewhere, or if Home Assistant's internals
+        change, it is where the device was last heard when the attempt started.
         """
         return self._source
 
@@ -223,7 +261,7 @@ class BleTransport:
             await self._subscribe(client)
         except BleakCharacteristicNotFoundError as err:
             # The service cache is stale, or this is not a valve that speaks the protocol.
-            if isinstance(client, BleakClientWithServiceCache):
+            if isinstance(client, bleak_retry_connector.BleakClientWithServiceCache):
                 with contextlib.suppress(Exception):
                     await client.clear_cache()
             await self.disconnect()
@@ -263,10 +301,14 @@ class BleTransport:
         except Exception as err:  # best effort: every backend differs
             _LOGGER.debug("%s: connection parameters not set: %s", self._name, err)
 
-    def _note_source(self, client: object | None) -> None:
-        """Record which adapter or proxy served the attempt."""
+    def _note_source(self, client: object | None, chosen: str | None = None) -> None:
+        """Record which adapter or proxy served the attempt.
+
+        ``chosen`` is what Home Assistant picked for this attempt, when it could be read;
+        then the scanner of a connection that succeeded; then where the device was heard.
+        """
         scanner = getattr(client, "_connected_scanner", None)  # Home Assistant's wrapper
-        source = getattr(scanner, "source", None)
+        source = chosen if isinstance(chosen, str) else getattr(scanner, "source", None)
         if not isinstance(source, str):
             details = self._device.details
             source = details.get("source") if isinstance(details, dict) else None
@@ -277,7 +319,8 @@ class BleTransport:
 
     async def _establish(self, *, pair: bool) -> BleakClient:
         return await establish_connection(
-            BleakClientWithServiceCache,
+            # Looked up at call time: Home Assistant swaps the class in after import.
+            _source_recording(bleak_retry_connector.BleakClientWithServiceCache),
             self._device,
             self._name,
             disconnected_callback=self._on_disconnect,
@@ -297,6 +340,9 @@ class BleTransport:
             if self._device_callback is not None:
                 self._device = self._device_callback() or self._device
             self._note_source(None)
+            client: BleakClient | None = None
+            slot: list[str | None] = [None]
+            token = _attempt_source.set(slot)
             try:
                 async with asyncio.timeout(self._connect_timeout), self._agent():
                     try:
@@ -308,7 +354,6 @@ class BleTransport:
                         # may still encrypt by itself, so try once without pairing.
                         _LOGGER.debug("%s: adapter cannot pair (%s)", self._name, err)
                         client = await self._establish(pair=False)
-                self._note_source(client)
             except _LINK_ERRORS as err:
                 last = self._translate(err)
                 last.__cause__ = err
@@ -319,6 +364,9 @@ class BleTransport:
                 last.__cause__ = err
             else:
                 return client
+            finally:
+                _attempt_source.reset(token)
+                self._note_source(client, slot[0])
         assert last is not None
         raise last
 
