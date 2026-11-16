@@ -33,6 +33,9 @@ layer; patch releases do not. Pin the exact version you have tested.
   valve. One BlueZ pairing agent at a time. Both ported from grundfos-ble.
 - `BleTransport.link_age`: through an ESPHome proxy a link held for more than a few seconds
   was measured to answer slowly, so callers can choose to reconnect.
+- The Bluetooth link is [ble-bond](https://github.com/83noit/ble-bond), the package shared
+  with grundfos-ble; `BleTransport` is a thin adapter over it and keeps its interface. Frames
+  are logged on `ble_bond.frames` (`mira-ble -v` turns it on).
 - Temperature limits enforced before anything is written.
 - `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
   `outlets-config` and `presets`.

@@ -1,8 +1,12 @@
-"""Bluetooth LE transport for Mira valves, built on bleak and bleak-retry-connector.
+"""Bluetooth LE transport for Mira valves, on top of ble-bond.
 
-The transport takes a ``BLEDevice`` from the caller and never scans. On every connection it
-pairs, waits for the encryption to settle, subscribes to the reply characteristic, and then
-runs one request at a time: write the frame, wait for a reply of the shape the caller expects.
+ble-bond's :class:`~ble_bond.BondedLink` does the Bluetooth part: pairing on every connection
+(on an ESPHome proxy, a re-encrypt with the stored bond), recording which adapter or proxy each
+attempt used, the BlueZ pairing agent, one request at a time, and closing the link whenever a
+request does not complete. This module adds the valve's protocol: frames are reassembled by
+:class:`~mira_ble.frame.FrameAssembler`, a reply is taken only if it has the shape the request
+expects, a rejection raises :class:`~mira_ble.exceptions.CommandRejected`, and ble-bond's
+exceptions become this library's.
 
 Pairing on every connection is what makes the same code work on a local adapter and on an
 ESPHome Bluetooth proxy. A local BlueZ adapter applies a stored bond by itself. A proxy does
@@ -23,21 +27,14 @@ Replies carry no request id and no opcode of their own. Three rules follow:
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import functools
-import logging
-import re
 from collections import deque
 from collections.abc import Callable
-from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Final, Protocol, Self
+from typing import TYPE_CHECKING, Final, Protocol, Self
 
-import bleak_retry_connector
-from bleak import BleakClient
-from bleak.exc import BleakCharacteristicNotFoundError, BleakError
-from bleak_retry_connector import establish_connection
+import ble_bond
+from ble_bond import BondedLink, LinkPolicy, SubscribeRetry
+from bleak.exc import BleakCharacteristicNotFoundError
 
-from mira_ble.bluez import bluez_device_path, bluez_pairing_agent
 from mira_ble.const import NOTIFY_CHARACTERISTIC_UUID, WRITE_CHARACTERISTIC_UUID
 from mira_ble.exceptions import (
     CommandRejected,
@@ -49,43 +46,9 @@ from mira_ble.exceptions import (
 from mira_ble.frame import Frame, FrameAssembler
 
 if TYPE_CHECKING:
-    from bleak.backends.characteristic import BleakGATTCharacteristic
+    from types import TracebackType
+
     from bleak.backends.device import BLEDevice
-
-_LOGGER = logging.getLogger(__name__)
-
-_attempt_source: ContextVar[list[str | None] | None] = ContextVar(
-    "mira_ble_attempt_source", default=None
-)
-"""Where the client class below records the Bluetooth source of the current attempt."""
-
-
-@functools.cache
-def _source_recording(base: Any) -> Any:  # noqa: ANN401 - a class only known at run time
-    """Wrap Home Assistant's client class so that it records the scanner it connects through.
-
-    Home Assistant (habluetooth) replaces bleak's client with one that picks a local adapter
-    or a proxy at connect time, by signal and free slots, and keeps the choice private until
-    the connection succeeds. A refused attempt must be pinned on the proxy that was actually
-    asked, so this subclass reads the choice from that private method as it is made. With
-    plain bleak, or if the method goes away, ``base`` is returned unchanged and the source
-    falls back to where the device was last heard.
-
-    Ported from grundfos-ble (same author, MIT).
-    """
-    if not hasattr(base, "_async_get_best_available_backend_and_device"):
-        return base
-
-    class SourceRecordingClient(base):  # type: ignore[misc]
-        def _async_get_best_available_backend_and_device(self, manager: Any) -> Any:  # noqa: ANN401
-            backend = super()._async_get_best_available_backend_and_device(manager)
-            if (slot := _attempt_source.get()) is not None:
-                with contextlib.suppress(Exception):
-                    slot[0] = backend.scanner.source
-            return backend
-
-    return SourceRecordingClient
-
 
 type ReplyTest = Callable[[bytes], bool]
 """Says whether a reply payload has the shape a request expects."""
@@ -93,8 +56,9 @@ type ReplyTest = Callable[[bytes], bool]
 DEFAULT_REQUEST_TIMEOUT: Final = 10.0
 """Seconds to wait for a whole reply, write included.
 
-State replies on an idle link have been reported to take around 6 s through a proxy, with
-occasional stalls beyond 10 s (Mira-Activate-HA). Not measured by this project.
+Measured through an ESPHome proxy on a Mira Platinum: 0.1 to 0.3 s on a new link, 7 to 10 s
+with frequent losses once the link has been up for a few seconds (see
+:attr:`BleTransport.link_age`). Mira-Activate-HA reports around 6 s on a held link.
 """
 DEFAULT_CONNECT_TIMEOUT: Final = 15.0
 """Seconds allowed for one connect-and-pair attempt."""
@@ -121,28 +85,29 @@ Requested best-effort where the backend can (Home Assistant's client can, throug
 Mira-Activate-HA found the valve slow and prone to drop on default parameters, and a 15 ms
 interval too heavy for a shared proxy radio.
 """
-DEFAULT_MTU_PAYLOAD: Final = 20
-"""Bytes one write can carry when the negotiated MTU is unknown (ATT default 23, less 3)."""
-ATT_OVERHEAD: Final = 3
-CHUNK_SPACING: Final = 0.025
-MAX_PIECES_REPORTED: Final = 8
-"""Notification pieces of an unfinished reply quoted in a RequestTimeout."""
-RETRY_DELAY: Final = 0.25
 
-PAIRING_REFUSED_CODES: Final = frozenset({82})
-"""ESP-IDF SMP reasons that mean "no bond and the valve is not in pairing mode"."""
-PAIRING_UNSUPPORTED_CODES: Final = frozenset({129})
-"""Reasons reported by proxies that cannot pair at all; the bond then has to exist already."""
-INSUFFICIENT_AUTHENTICATION_CODE: Final = 5
-"""The GATT status behind a subscribe refused for want of encryption."""
-
-_PAIRING_FAILED = re.compile(r"Pairing failed due to error: (-?\d+)")
-"""bleak-esphome's message for a failed pair call, with the proxy's reason code."""
-_INSUFFICIENT_AUTHENTICATION = re.compile(r"insufficient (authentication|encryption)", re.I)
-BLUEZ_AUTHENTICATION_FAILED: Final = "org.bluez.Error.AuthenticationFailed"
-"""BlueZ's report of a refused pairing."""
-_LINK_ERRORS: Final = (BleakError, EOFError, BrokenPipeError, AttributeError, NotImplementedError)
-"""What bleak backends raise for link trouble; bleak-retry-connector retries most of these."""
+POLICY: Final = LinkPolicy(
+    settle_after_pair=SETTLE_AFTER_PAIR,
+    settle_after_subscribe=SETTLE_AFTER_SUBSCRIBE,
+    # Only a subscribe refused for want of encryption is worth a second try on the same link.
+    subscribe_retry=SubscribeRetry.INSUFFICIENT_AUTHENTICATION,
+    subscribe_retry_delay=SUBSCRIBE_RETRY_DELAY,
+    # Refused twice: the link is up but not encrypted. Weak evidence about the bond, reported
+    # as PairingRequired(refused=False); it is also what a proxy with a stuck bond store does.
+    insufficient_authentication_is_evidence=True,
+    # An adapter or proxy that cannot pair at all may still hold a bond that encrypts the link
+    # by itself (CoreBluetooth does), so it gets one more try without pairing.
+    retry_unpaired=True,
+    # Writes are sized from the negotiated MTU. Only a preset write (67 bytes) is longer than
+    # the default; whether a valve joins a command split over several writes is not measured,
+    # and the vendor app and the other projects always write a frame whole.
+    write_chunk=None,
+    connection_params=CONNECTION_PARAMS,
+    connect_timeout=DEFAULT_CONNECT_TIMEOUT,
+    request_timeout=DEFAULT_REQUEST_TIMEOUT,
+)
+"""How a Mira valve's link is handled (see the constants above for where each value comes
+from)."""
 
 
 class Transport(Protocol):
@@ -181,6 +146,11 @@ class BleTransport:
     ``expect_new_bond`` says a new bond may be made on this connection (a pairing flow, the
     command line). Only then is a BlueZ pairing agent registered on a local adapter; ordinary
     polls never take over pairing for the system.
+
+    ``disconnected_callback`` is called when the valve or the adapter drops the live link, not
+    when this transport disconnects on purpose.
+
+    ``async with BleTransport(device) as transport:`` connects on entry and disconnects on exit.
     """
 
     def __init__(
@@ -195,43 +165,48 @@ class BleTransport:
         device_callback: Callable[[], BLEDevice | None] | None = None,
         expect_new_bond: bool = False,
     ) -> None:
-        self._device = device
-        self._device_callback = device_callback
+        self._link = BondedLink(
+            device,
+            notify_uuid=NOTIFY_CHARACTERISTIC_UUID,
+            write_uuid=WRITE_CHARACTERISTIC_UUID,
+            assembler=FrameAssembler(),
+            policy=POLICY,
+            name=name,
+            max_attempts=max_attempts,
+            connect_timeout=connect_timeout,
+            request_timeout=request_timeout,
+            disconnected_callback=disconnected_callback,
+            device_callback=device_callback,
+            expect_new_bond=expect_new_bond,
+        )
         self._name = name or device.name or device.address
-        self._max_attempts = max(1, max_attempts)
-        self._connect_timeout = connect_timeout
-        self._request_timeout = request_timeout
-        self._disconnected_callback = disconnected_callback
-        self._expect_new_bond = expect_new_bond
-        self._client: BleakClient | None = None
-        self._lock = asyncio.Lock()
-        self._pending: asyncio.Future[bytes] | None = None
-        self._accept: ReplyTest | None = None
-        self._assembler = FrameAssembler()
-        self._pieces: list[bytes] = []
-        self._source: str | None = None
         self._connected_at = 0.0
-        self.unsolicited = 0
-        """Frames received that no request was waiting for, or that fitted none."""
-        self.last_frames: deque[tuple[str, bytes]] = deque(maxlen=48)
+        self.last_frames = self._link.last_frames
         """Recent traffic as ("tx" | "rx", frame) for diagnostics and fixture capture."""
 
     async def __aenter__(self) -> Self:
+        """Connect, as :meth:`connect` does, and return the transport."""
         await self.connect()
         return self
 
-    async def __aexit__(self, *_exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Disconnect, whatever happened in the block."""
         await self.disconnect()
-
-    @property
-    def device(self) -> BLEDevice:
-        """The device this transport talks to."""
-        return self._device
 
     @property
     def is_connected(self) -> bool:
         """True while the BLE link is up."""
-        return self._client is not None and self._client.is_connected
+        return self._link.is_connected
+
+    @property
+    def unsolicited(self) -> int:
+        """Frames received that no request was waiting for, or that fitted none."""
+        return self._link.unsolicited
 
     @property
     def link_age(self) -> float | None:
@@ -253,163 +228,26 @@ class BleTransport:
 
         The bond lives on one adapter, so a refusal only says something about the bond when
         it came through that adapter. Under Home Assistant this is the scanner chosen for
-        the attempt, refused attempts included; elsewhere, or if Home Assistant's internals
-        change, it is where the device was last heard when the attempt started.
+        the attempt, refused attempts included; elsewhere it is where the device was last
+        heard when the attempt started, and None when that is not known either.
         """
-        return self._source
+        return self._link.last_source
 
     async def connect(self) -> None:
         """Connect through the device's path, pair (encrypt) and subscribe to replies.
 
-        Retries are run here, one connection attempt at a time, so that a refusal on any
-        attempt is seen; bleak-retry-connector reports only the last attempt's error.
+        Retries are run one connection attempt at a time, so that a refusal on any attempt
+        is seen; bleak-retry-connector reports only the last attempt's error.
         """
         if self.is_connected:
             return
-        self._assembler.reset()
-        self._pieces.clear()
-        client = await self._connect_with_retries()
-        self._client = client
+        with _translated(self._name):
+            await self._link.connect()
         self._connected_at = asyncio.get_running_loop().time()
-        try:
-            await self._set_connection_params(client)
-            await asyncio.sleep(SETTLE_AFTER_PAIR)
-            await self._subscribe(client)
-        except BleakCharacteristicNotFoundError as err:
-            # The service cache is stale, or this is not a valve that speaks the protocol.
-            if isinstance(client, bleak_retry_connector.BleakClientWithServiceCache):
-                with contextlib.suppress(Exception):
-                    await client.clear_cache()
-            await self.disconnect()
-            raise MiraConnectionError(
-                f"{self._name}: the protocol characteristic was not found; the device does "
-                f"not offer the 267f service, or a cached service list is stale ({err})"
-            ) from err
-        except (*_LINK_ERRORS, TimeoutError) as err:
-            await self.disconnect()
-            raise self._translate(err, subscribing=True) from err
-        except BaseException:
-            await self.disconnect()
-            raise
-        _LOGGER.debug("%s: connected and subscribed via %s", self._name, self._source)
-        await asyncio.sleep(SETTLE_AFTER_SUBSCRIBE)
-
-    async def _subscribe(self, client: BleakClient) -> None:
-        """Subscribe to replies, retrying once if the encryption was not up yet."""
-        try:
-            await client.start_notify(NOTIFY_CHARACTERISTIC_UUID, self._on_notify)
-        except BleakCharacteristicNotFoundError:
-            raise
-        except _LINK_ERRORS as err:
-            if not _INSUFFICIENT_AUTHENTICATION.search(str(err)):
-                raise
-            _LOGGER.debug("%s: subscribe refused (%s); retrying once", self._name, err)
-            await asyncio.sleep(SUBSCRIBE_RETRY_DELAY)
-            await client.start_notify(NOTIFY_CHARACTERISTIC_UUID, self._on_notify)
-
-    async def _set_connection_params(self, client: BleakClient) -> None:
-        """Ask for a quicker, more tolerant link where the backend can; never fail on it."""
-        setter = getattr(client, "set_connection_params", None)
-        if setter is None:
-            return
-        try:
-            await setter(*CONNECTION_PARAMS)
-        except Exception as err:  # best effort: every backend differs
-            _LOGGER.debug("%s: connection parameters not set: %s", self._name, err)
-
-    def _note_source(self, client: object | None, chosen: str | None = None) -> None:
-        """Record which adapter or proxy served the attempt.
-
-        ``chosen`` is what Home Assistant picked for this attempt, when it could be read;
-        then the scanner of a connection that succeeded; then where the device was heard.
-        """
-        scanner = getattr(client, "_connected_scanner", None)  # Home Assistant's wrapper
-        source = chosen if isinstance(chosen, str) else getattr(scanner, "source", None)
-        if not isinstance(source, str):
-            details = self._device.details
-            source = details.get("source") if isinstance(details, dict) else None
-            if not isinstance(source, str):
-                path = bluez_device_path(self._device)
-                source = path.rsplit("/", 1)[0] if path else None
-        self._source = source
-
-    async def _establish(self, *, pair: bool) -> BleakClient:
-        return await establish_connection(
-            # Looked up at call time: Home Assistant swaps the class in after import.
-            _source_recording(bleak_retry_connector.BleakClientWithServiceCache),
-            self._device,
-            self._name,
-            disconnected_callback=self._on_disconnect,
-            max_attempts=1,
-            pair=pair,
-            # With bleak's own cache a local connect returns before bluetoothd has finished
-            # setting up GATT; without it bleak waits for ServicesResolved, which BlueZ's
-            # cache for a bonded device keeps quick. A proxy keeps its cache.
-            use_services_cache=bluez_device_path(self._device) is None,
-        )
-
-    async def _connect_with_retries(self) -> BleakClient:
-        last: MiraConnectionError | None = None
-        for attempt in range(self._max_attempts):
-            if attempt:
-                await asyncio.sleep(RETRY_DELAY)
-            if self._device_callback is not None:
-                self._device = self._device_callback() or self._device
-            self._note_source(None)
-            client: BleakClient | None = None
-            slot: list[str | None] = [None]
-            token = _attempt_source.set(slot)
-            try:
-                async with asyncio.timeout(self._connect_timeout), self._agent():
-                    try:
-                        client = await self._establish(pair=True)
-                    except _LINK_ERRORS as err:
-                        if not self._pairing_unsupported(err):
-                            raise
-                        # This adapter cannot pair at all. If it already holds a bond the link
-                        # may still encrypt by itself, so try once without pairing.
-                        _LOGGER.debug("%s: adapter cannot pair (%s)", self._name, err)
-                        client = await self._establish(pair=False)
-            except _LINK_ERRORS as err:
-                last = self._translate(err)
-                last.__cause__ = err
-                if isinstance(last, PairingRequired):
-                    raise last from err
-            except TimeoutError as err:
-                last = MiraConnectionError(f"timed out connecting to {self._name}")
-                last.__cause__ = err
-            else:
-                return client
-            finally:
-                _attempt_source.reset(token)
-                self._note_source(client, slot[0])
-        assert last is not None
-        raise last
-
-    def _agent(self) -> contextlib.AbstractAsyncContextManager[None]:
-        if self._expect_new_bond:
-            return bluez_pairing_agent(self._device)
-        return contextlib.nullcontext()
-
-    @staticmethod
-    def _pairing_unsupported(err: BaseException) -> bool:
-        if isinstance(err, NotImplementedError):
-            return True
-        match = _PAIRING_FAILED.search(str(err))
-        return match is not None and int(match.group(1)) in PAIRING_UNSUPPORTED_CODES
 
     async def disconnect(self) -> None:
-        """Drop the link; safe to call when not connected."""
-        client, self._client = self._client, None
-        if client is None:
-            return
-        if client.is_connected:
-            # Leaving notifications running can let a native callback fire into a torn-down
-            # client (mira-mode-control saw it crash a process on exit).
-            with contextlib.suppress(Exception):
-                await client.stop_notify(NOTIFY_CHARACTERISTIC_UUID)
-        with contextlib.suppress(Exception):
-            await client.disconnect()
+        """Unsubscribe and drop the link; safe to call when not connected."""
+        await self._link.disconnect()
 
     async def request(
         self, frame: Frame, *, accept: ReplyTest | None = None, timeout: float | None = None
@@ -422,117 +260,54 @@ class BleTransport:
         :class:`~mira_ble.exceptions.CommandRejected`. A request that does not complete, for
         whatever reason, closes the link.
         """
-        async with self._lock:
-            client = self._require_client()
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[bytes] = loop.create_future()
-            self._assembler.reset()
-            self._pieces.clear()
-            self._pending, self._accept = future, accept
-            data = frame.encode()
-            completed = False
-            try:
-                async with asyncio.timeout(self._request_timeout if timeout is None else timeout):
-                    await self._write(client, data)
-                    reply = await future
-                completed = True
-            except TimeoutError as err:
-                raise RequestTimeout(
-                    f"{self._name}: no reply to {data.hex(' ')}; {self._received()}"
-                ) from err
-            except _LINK_ERRORS as err:
-                raise self._translate(err) from err
-            finally:
-                self._pending = self._accept = None
-                if future.done() and not future.cancelled():
-                    future.exception()  # mark as retrieved
-                else:
-                    future.cancel()
-                if not completed:
-                    await self.disconnect()
-            decoded = Frame.decode(reply)
-            if decoded.is_rejection:
-                raise CommandRejected(frame.opcode, reply)
-            return decoded
 
-    def _require_client(self) -> BleakClient:
-        if self._client is None or not self._client.is_connected:
-            raise ConnectionLost(f"{self._name}: not connected")
-        return self._client
+        def answers(raw: bytes) -> bool:
+            reply = Frame.decode(raw)
+            if not reply.is_valid_reply:
+                return False
+            return reply.is_rejection or accept is None or accept(reply.payload)
 
-    async def _write(self, client: BleakClient, data: bytes) -> None:
-        self.last_frames.append(("tx", data))
-        _LOGGER.debug("%s: tx %s", self._name, data.hex(" "))
-        size = self._write_size(client)
-        for start in range(0, len(data), size):
-            if start:
-                await asyncio.sleep(CHUNK_SPACING)
-            await client.write_gatt_char(
-                WRITE_CHARACTERISTIC_UUID, data[start : start + size], response=False
+        with _translated(self._name):
+            raw = await self._link.request(frame.encode(), accept=answers, timeout=timeout)
+        reply = Frame.decode(raw)
+        if reply.is_rejection:
+            raise CommandRejected(frame.opcode, raw)
+        return reply
+
+
+class _translated:  # noqa: N801 - used as a context manager, reads like one
+    """Turn ble-bond's exceptions into this library's, keeping the cause."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if not isinstance(exc, ble_bond.LinkError):
+            return
+        mapped: MiraConnectionError
+        if isinstance(exc, ble_bond.PairingRequired):
+            mapped = PairingRequired(str(exc), exc.error_code, refused=exc.refused)
+        elif isinstance(exc, ble_bond.RequestTimeout):
+            mapped = RequestTimeout(str(exc), exc.error_code)
+        elif isinstance(exc, ble_bond.ConnectionLost):
+            mapped = ConnectionLost(str(exc), exc.error_code)
+        elif isinstance(exc.__cause__, BleakCharacteristicNotFoundError):
+            # The service cache is stale (ble-bond has cleared it), or this is not a valve
+            # that speaks the protocol.
+            mapped = MiraConnectionError(
+                f"{self._name}: the protocol characteristic was not found; the device does "
+                f"not offer the 267f service, or a cached service list is stale "
+                f"({exc.__cause__})"
             )
-
-    @staticmethod
-    def _write_size(client: BleakClient) -> int:
-        """Bytes one write may carry on this link.
-
-        Only a preset write (67 bytes) is ever longer than the default. Whether a valve joins
-        a command split over several writes has not been measured: the vendor app and the
-        other projects always write a frame whole, on a link with a larger MTU.
-        """
-        try:
-            mtu = int(client.mtu_size)
-        except Exception:  # some backends only know the MTU after an exchange
-            return DEFAULT_MTU_PAYLOAD
-        return max(DEFAULT_MTU_PAYLOAD, mtu - ATT_OVERHEAD)
-
-    def _received(self) -> str:
-        """Describe what came for a request that got no whole reply: silence, or pieces."""
-        if not self._pieces:
-            return "nothing received"
-        quoted = " | ".join(piece.hex(" ") for piece in self._pieces[:MAX_PIECES_REPORTED])
-        more = " | ..." if len(self._pieces) > MAX_PIECES_REPORTED else ""
-        return f"{len(self._pieces)} piece(s) received: {quoted}{more}"
-
-    def _on_notify(self, _characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
-        self._pieces.append(bytes(data))
-        for raw in self._assembler.feed(data):
-            self.last_frames.append(("rx", raw))
-            _LOGGER.debug("%s: rx %s", self._name, raw.hex(" "))
-            frame = Frame.decode(raw)
-            pending = self._pending
-            if (
-                pending is not None
-                and not pending.done()
-                and frame.is_valid_reply
-                and (frame.is_rejection or self._accept is None or self._accept(frame.payload))
-            ):
-                pending.set_result(raw)
-            else:
-                self.unsolicited += 1
-                _LOGGER.debug("%s: unsolicited frame %s", self._name, raw.hex(" "))
-
-    def _on_disconnect(self, client: BleakClient) -> None:
-        if self._client is not None and client is not self._client:
-            return  # a late callback from an earlier link
-        self._client = None
-        pending = self._pending
-        if pending is not None and not pending.done():
-            pending.set_exception(ConnectionLost(f"{self._name}: disconnected"))
-        if self._disconnected_callback is not None:
-            self._disconnected_callback()
-
-    def _translate(self, err: BaseException, *, subscribing: bool = False) -> MiraConnectionError:
-        text = str(err)
-        if match := _PAIRING_FAILED.search(text):
-            code = int(match.group(1))
-            if code in PAIRING_REFUSED_CODES:
-                return PairingRequired(f"{self._name}: {text}", code)
-            return MiraConnectionError(f"{self._name}: {text}", code)
-        if BLUEZ_AUTHENTICATION_FAILED in text:
-            return PairingRequired(f"{self._name}: {text}")
-        if subscribing and _INSUFFICIENT_AUTHENTICATION.search(text):
-            # The link came up but was not encrypted, twice. Weak evidence about the bond.
-            return PairingRequired(
-                f"{self._name}: {text}", INSUFFICIENT_AUTHENTICATION_CODE, refused=False
-            )
-        return MiraConnectionError(f"{self._name}: {type(err).__name__}: {text}")
+        else:
+            # Includes a proxy that cannot pair and could not connect unpaired either.
+            mapped = MiraConnectionError(str(exc), exc.error_code)
+        raise mapped from exc

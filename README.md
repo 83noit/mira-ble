@@ -217,8 +217,9 @@ where each fact comes from.
   pairing on every connection, settling before the subscribe, and not re-pairing on suspicion.
 - [Nigel Hannam, shower-controller-documentation](https://github.com/nhannam/shower-controller-documentation):
   the older generation's protocol.
-- [alpha-hwr](https://github.com/eman/alpha-hwr) (MIT): the BlueZ pairing agent this one is
-  adapted from.
+- [ble-bond](https://github.com/83noit/ble-bond) (MIT, same author): the bonded Bluetooth
+  link this library runs on, shared with grundfos-ble. Its BlueZ pairing agent is adapted
+  from [alpha-hwr](https://github.com/eman/alpha-hwr), credited there.
 
 Copyright notices: [THIRD_PARTY_NOTICES.md](https://github.com/83noit/mira-ble/blob/main/THIRD_PARTY_NOTICES.md).
 

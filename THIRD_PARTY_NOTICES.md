@@ -6,11 +6,13 @@ here as the MIT licence requires; the licence text that applies to all of them f
 
 | Project | Copyright | What was taken |
 |---|---|---|
-| [alpha-hwr](https://github.com/eman/alpha-hwr) | Copyright (c) 2026 Emmanuel Levijarvi | `mira_ble/bluez.py` is adapted from its `core/pairing_agent.py`. |
 | [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) | Copyright (c) 2026 Ryan Shaw | State and preset layouts, and replies recorded from a real valve, shipped in `mira_ble/testing.py`. |
 | [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) | Copyright (c) 2026 Hayden Griffin | Outlet configuration and last-usage layouts, and recorded replies in `mira_ble/testing.py`. |
 | [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) | Copyright (c) 2026 Jon Williams | Frames captured from the vendor app, in `mira_ble/testing.py`. |
-| [grundfos-ble](https://github.com/83noit/grundfos-ble) | Copyright (c) 2026 83noit (the author of this library) | Transport and packaging template. |
+| [grundfos-ble](https://github.com/83noit/grundfos-ble) | Copyright (c) 2026 83noit (the author of this library) | Packaging template. |
+
+The Bluetooth link itself is the separate package [ble-bond](https://github.com/83noit/ble-bond)
+(MIT, same author), a dependency rather than copied code; its own notices cover what it adapts.
 
 ## MIT licence
 

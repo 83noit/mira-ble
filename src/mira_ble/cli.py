@@ -328,8 +328,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
     if args.verbose:
-        # Only this package: bleak's own debug output buries the frames.
-        logging.getLogger("mira_ble").setLevel(logging.DEBUG)
+        # Only this package and its link (ble-bond, which logs the frames on a logger of
+        # their own): bleak's debug output would bury them.
+        for name in ("mira_ble", "ble_bond", "ble_bond.frames"):
+            logging.getLogger(name).setLevel(logging.DEBUG)
     try:
         return int(asyncio.run(args.handler(args)))
     except KeyboardInterrupt:

@@ -24,11 +24,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # Capped because bluez.py reads a private attribute of bleak's BlueZ manager.
-    "bleak>=3.0,<4",
-    "bleak-retry-connector>=4.0",
-    # bluez.py imports dbus_fast.annotations, which exists from 4.0.
-    "dbus-fast>=4.0; sys_platform == 'linux'",
+    # The Bluetooth link (pairing, proxies, BlueZ agent, one request at a time); every 1.x is
+    # backward compatible.
+    "ble-bond>=1.1,<2",
+    # The command line scans with bleak; the link's own needs come with ble-bond.
+    "bleak>=3.0.2",
 ]
 
 [project.scripts]
@@ -48,7 +48,6 @@ dev = [
     "pytest-cov>=7",
     "ruff>=0.14",
     "mypy>=1.19",
-    "dbus-fast>=4.0",  # unconditional (Linux-only at runtime) so mypy sees it on every platform
 ]
 
 [tool.hatch.version]
@@ -126,4 +125,6 @@ fail_under = 95
 skip_covered = false
 
 [tool.uv]
+# ble-bond is ours and released alongside this library, so it is exempt.
 exclude-newer = "3 days"
+exclude-newer-package = { ble-bond = false }
