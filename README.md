@@ -66,7 +66,10 @@ offering keys the valve no longer accepts. Forget the valve on the adapter and p
   in about 150 connections on a marginal link (-76 dBm). The valve then has to be paired
   again. A strong signal makes it rare. From ESP-IDF 5.5.6 the proxy can be built with
   `CONFIG_BT_BLE_SMP_REMOVE_BOND_ON_PAIR_FAIL_AS_CENTRAL: "n"` to keep the bond; running on
-  this project's proxy, but not yet seen through a dropped link.
+  this project's proxy, but not yet seen through a dropped link. The proxy then never drops a
+  key by itself, so after a valve reset pairing fails until it does; the integration's
+  [Known issues](https://github.com/83noit/ha-mira-ble#known-issues) give the options,
+  including `CONFIG_BT_BLE_SMP_UNBOND_ON_KEY_MISSING` and its security cost.
 - *ESP-IDF 5.5.6 (ESPHome 2026.10.x) forgets a bond after the first connection*, until the
   proxy restarts ([esphome#21880](https://github.com/esphome/esphome/issues/21880)). Pin the
   proxy to ESP-IDF 5.5.5, or use ESPHome 2026.11 or later, which works around it.
