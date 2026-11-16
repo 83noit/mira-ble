@@ -34,7 +34,7 @@ supported.
 | Model | Status |
 | --- | --- |
 | Mira Platinum | Run on one valve from a Mac and through an ESPHome proxy: pairing, every read, starting a preset, the outlet command, and both ways of stopping. A preset warms the water up, then waits until the outlet button or an outlet command starts the shower. (The Mira app itself controls the Platinum through the cloud, not Bluetooth.) |
-| Mira Activate, current Mira Mode | **Should work, not tried yet.** Other projects worked out the protocol on real valves, and this library is tested against their recordings, but it hasn't been run on one. For those valves the safe bet today is [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (Activate) or [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) / [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (Mode). If you'd like to try this one, please [open an issue](https://github.com/83noit/mira-ble/issues) |
+| Mira Activate, current Mira Mode | **Should work, not tried yet.** Other projects worked out the protocol on real valves, and this library is tested against their recordings, but nobody has run it on one, so you'd be the first. If you'd like to help, please [open an issue](https://github.com/83noit/mira-ble/issues) before you start, and begin with the read-only commands. If you'd rather have something already in daily use on your valve, [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (Activate) and [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) / [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (Mode) are built specifically for them |
 
 ## Install
 
