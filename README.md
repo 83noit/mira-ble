@@ -1,5 +1,10 @@
 # mira-ble
 
+[![CI](https://github.com/83noit/mira-ble/actions/workflows/ci.yml/badge.svg)](https://github.com/83noit/mira-ble/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mira-ble)](https://pypi.org/project/mira-ble/)
+[![Python](https://img.shields.io/pypi/pyversions/mira-ble)](https://pypi.org/project/mira-ble/)
+[![License: MIT](https://img.shields.io/github/license/83noit/mira-ble)](https://github.com/83noit/mira-ble/blob/main/LICENSE)
+
 An async Python library for talking to a **Mira Platinum** digital shower over Bluetooth LE.
 It reads what the valve is doing, its outlet limits, its presets and its last shower, and it
 can start and stop outlets and presets. Every command is checked by reading the valve back.
