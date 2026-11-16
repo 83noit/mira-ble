@@ -15,7 +15,7 @@ from bleak.backends.device import BLEDevice
 from mira_ble import cli, protocol
 from mira_ble.const import LEGACY_SERVICE_UUID, SERVICE_UUID
 from mira_ble.protocol import Opcode
-from mira_ble.testing import STOP_FRAME, FakeValve
+from mira_ble.testing import FakeValve
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -116,8 +116,11 @@ def test_run_then_stop(fake: FakeValve, capsys: pytest.CaptureFixture[str]) -> N
     assert "target 39.0 C" in out
     assert "flow 10 of 10 L/min" in out
     assert cli.main(["stop", ADDRESS]) == 0
-    assert "idle" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "held (paused)" in out
+    assert "target 39.0 C" in out  # the stop left the valve's settings alone
     assert fake.outlets == 0
+    assert not fake.running
 
 
 def test_run_applies_the_outlets_own_maximum(
@@ -184,7 +187,9 @@ def test_a_start_that_cannot_be_confirmed_is_followed_by_a_stop(
     err = capsys.readouterr().err
     assert "NotConfirmed" in err
     assert "stopping the valve as a precaution" in err
-    assert STOP_FRAME in [frame.encode() for frame in fake.sent]
+    stops = [f.encode() for f in fake.sent if f.opcode == Opcode.SET_OUTLETS][1:]
+    assert stops  # a stop followed the start
+    assert all(frame[8] & 0x07 == 0 for frame in stops)  # and none of them opens an outlet
 
 
 def test_a_failed_precautionary_stop_tells_the_user_to_go_and_look(
@@ -201,12 +206,12 @@ def test_start_a_preset(fake: FakeValve, capsys: pytest.CaptureFixture[str]) -> 
     assert "outlet 1" in capsys.readouterr().out
 
 
-def test_a_platinum_preset_is_shown_as_running(
+def test_a_preset_with_no_outlet_bit_is_shown_as_running(
     fake: FakeValve, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fake.platinum = True
+    fake.hidden_outlet = True
     assert cli.main(["start", ADDRESS, "1"]) == 0
-    assert "running (held)" in capsys.readouterr().out
+    assert "running " in capsys.readouterr().out
 
 
 def test_cold_and_fault_states_are_shown() -> None:
@@ -220,6 +225,17 @@ def test_cold_and_fault_states_are_shown() -> None:
     line = cli._state_line(protocol.decode_state(bytes(payload)))
     assert "FAULT (code 50)" in line
     assert "water -" in line
+
+
+def test_watch_ends_by_itself_after_its_duration(
+    fake: FakeValve, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake.held = True
+    fake.volume = 4
+    assert cli.main(["watch", ADDRESS, "--interval", "0", "--duration", "0.05"]) == 0
+    out = capsys.readouterr().out
+    assert "held (paused)" in out
+    assert "4 L used" in out
 
 
 def test_watch_prints_changes_until_interrupted(

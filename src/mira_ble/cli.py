@@ -37,17 +37,21 @@ EXIT_INTERRUPTED = 130
 def _state_line(state: State) -> str:
     if state.outlets:
         what = "outlet " + "+".join(str(n) for n in state.outlets.numbers)
-    elif state.active:
-        what = "running (held)"
+    elif state.running:
+        what = "running"
+    elif state.held:
+        what = "held (paused)"
     else:
         what = "idle"
     water = "-" if state.water_temperature is None else f"{state.water_temperature:.1f} C"
     parts = [f"{what:<14}", f"water {water}"]
     if state.target_temperature is not None:
         parts.append(f"target {state.target_temperature:.1f} C")
-    elif state.active:
+    elif state.running:
         parts.append("target cold")
     parts.append(f"flow {state.flow:g} of {state.flow_setting:g} L/min")
+    if state.volume:
+        parts.append(f"{state.volume} L used")
     if state.fault:
         parts.append(f"FAULT (code {state.error_code})")
     return "  ".join(parts)
@@ -137,7 +141,9 @@ async def _status(args: argparse.Namespace) -> int:
 async def _watch(args: argparse.Namespace) -> int:
     async def action(valve: MiraValve) -> None:
         previous: str | None = None
-        while True:
+        loop = asyncio.get_running_loop()
+        end = None if args.duration is None else loop.time() + args.duration
+        while end is None or loop.time() < end:
             state = await valve.read_state()
             line = _state_line(state)
             if args.raw:
@@ -288,6 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--interval", type=float, default=WATCH_SECONDS, help="seconds between reads"
     )
     watch.add_argument("--raw", action="store_true", help="also print the undecoded reply")
+    watch.add_argument("--duration", type=float, default=None, help="stop after this many seconds")
     add("outlets-config", _outlets_config, "read each outlet's limits and defaults")
     add("presets", _presets, "list the stored presets")
     add("start", _start, "run a stored preset").add_argument("slot", type=int)

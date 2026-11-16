@@ -38,6 +38,16 @@ STATE_RUNNING_WARMER = _hex("21 20 00 00 00 1b 00 00 00 00 01 a4 32 01 01 04 1b 
 """The same run six seconds later: water 24.6 C to 26.0 C. (mira-mode-control)"""
 STATE_STOPPED = _hex("21 20 00 00 00 00 00 00 80 00 00 00 10 00 01 03 00 01")
 """Just after stopping. (mira-mode-control)"""
+PLATINUM_REST = _hex("31 20 00 00 00 00 00 00 a0 00 01 90 20 00 00 a1 00 01")
+"""A Mira Platinum at rest, Everyday (40.0 C, 8 L/min) selected on the controller. (own capture)"""
+PLATINUM_WARM_UP = _hex("31 20 00 01 00 1c 10 00 20 00 01 90 20 01 01 0a 1c 01")
+"""The same valve warming up a preset started at the wall: outlet 1, 7 L/min, 1 L so far."""
+PLATINUM_READY = _hex("31 20 00 04 00 00 00 00 e0 00 01 90 20 40 01 9a 00 01")
+"""Warm-up done: water off, held, waiting for the outlet button; rest follows after 2 min."""
+PLATINUM_SHOWER = _hex("31 24 00 02 00 1d 00 00 61 dd 0d 90 20 01 01 92 1d 01")
+"""The shower proper after the outlet button: preset 4, 477 s left, 7.25 L/min, 2 L so far."""
+PLATINUM_STOPPING = _hex("31 20 00 02 00 1d 00 00 60 00 01 90 20 40 01 9d 1d 01")
+"""Two seconds after a stop at the wall: held, no outlet bit, flow not yet zero."""
 STATE_RAMPING = _hex("21 c0 00 00 00 1e 00 00 00 00 01 c2 30 01 00 fd 1e 01")
 """Outlet 1 just after a start: 12 L/min commanded, 7.5 reached, target 45.0 C. (ha-mira-mode)"""
 STATE_TARGET_WITH_FLAGS = _hex("21 20 00 00 00 12 00 00 00 00 0d c2 32 01 00 f6 12 01")
@@ -140,8 +150,12 @@ class FakeValve:
     * ``unsolicited``: payloads it pushes ahead of its next reply;
     * ``idle_target_tenths`` / ``idle_flow_byte``: what it reports at rest (some valves keep
       the last user's values there);
-    * ``platinum``: behave as a Mira Platinum was measured to: a running preset shows the
-      held bit and the run flag with no outlet bit, and "run preset 0" stops it;
+    * ``hidden_outlet``: a running preset shows the held bit and measured flow with no outlet
+      bit, and "run preset 0" stops it (reported for one valve, not reproduced since);
+    * ``pause_ignored`` / ``pause_rejected``: what it does with the app's pause (an outlet
+      command with only the hold bit). By default the water stops and the valve stays held,
+      as a Mira Platinum was measured to for two minutes; :meth:`rest` ends the hold;
+    * ``volume``: state byte 3, the litres a Platinum counts while it runs;
     * ``connect_error``: raised by :meth:`connect`.
     """
 
@@ -158,13 +172,17 @@ class FakeValve:
     error_code: int = 1
     outlets: int = 0
     held: bool = False
-    run_flag: bool = False
+    flowing: bool = False
+    """Water runs although no outlet bit is set (see ``hidden_outlet``)."""
+    volume: int = 0
     target_tenths: int = 0
     flow_byte: int = 0x10
     idle_target_tenths: int = 0
     idle_flow_byte: int = 0x10
     lag: int = 0
-    platinum: bool = False
+    hidden_outlet: bool = False
+    pause_ignored: bool = False
+    pause_rejected: bool = False
     connected: bool = False
     silent: bool = False
     ignore_commands: bool = False
@@ -188,7 +206,16 @@ class FakeValve:
     @property
     def active(self) -> bool:
         """True while the simulated valve is running or holding a run."""
-        return bool(self.outlets) or self.held or self.run_flag
+        return self.running or self.held
+
+    @property
+    def running(self) -> bool:
+        """True while the simulated valve lets water through."""
+        return bool(self.outlets) or self.flowing
+
+    def rest(self) -> None:
+        """End a hold, as the valve does by itself after two minutes."""
+        self.outlets, self.held, self.flowing, self.volume = 0, False, False, 0
 
     async def connect(self) -> None:
         """Pretend to connect, or fail as ``connect_error`` says."""
@@ -212,14 +239,14 @@ class FakeValve:
         """Return the state reply for the valve's present condition."""
         payload = bytearray(STATE_IDLE)
         active = self.active
-        payload[3] = 1 if self.run_flag else 0
+        payload[3] = self.volume
         payload[8] = 0x00 if active else 0x80
         target = self.target_tenths if active else self.idle_target_tenths
         payload[10:12] = target.to_bytes(2, "big")
         payload[12] = self.flow_byte if active else self.idle_flow_byte
         payload[13] = self.outlets | (0x40 if self.held else 0)
         payload[14:16] = round(self.water_temperature * 10).to_bytes(2, "big")
-        payload[16] = self.flow_byte if active else 0
+        payload[16] = self.flow_byte if self.running else 0
         payload[17] = self.error_code
         return bytes(payload)
 
@@ -320,27 +347,37 @@ class FakeValve:
             return _REJECTED
         tenths = ((payload[0] & 0x01) << 8) | payload[1]
         outlets = payload[3] & 0x07
-        if self.ignore_commands or (not outlets and self.zero_stop_ignored):
+        pause = not outlets and bool(payload[3] & 0x40)
+        if pause and self.pause_rejected:
+            return _REJECTED
+        if self.ignore_commands or (pause and self.pause_ignored):
+            return _OK
+        if not outlets and not pause and self.zero_stop_ignored:
+            return _OK
+        if pause:
+            self._apply(
+                outlets=0, held=True, flowing=False, target_tenths=tenths, flow_byte=payload[2]
+            )
             return _OK
         if outlets:
             self._apply(
                 outlets=outlets,
                 held=False,
-                run_flag=self.platinum,
+                flowing=False,
                 target_tenths=tenths,  # zero is "cold": the valve does not keep the old target
                 flow_byte=payload[2],
             )
         else:
-            self._apply(outlets=0, held=False, run_flag=False)
+            self._apply(outlets=0, held=False, flowing=False)
         return _OK
 
     def _run_preset(self, payload: bytes) -> bytes:
         slot = payload[0]
         if slot == 0:
-            if not self.platinum:
+            if not self.hidden_outlet:
                 return _REJECTED
             if not self.ignore_commands:
-                self._apply(outlets=0, held=False, run_flag=False)
+                self._apply(outlets=0, held=False, flowing=False)
             return _OK
         stored = self.presets.get(slot)
         if stored is None:
@@ -352,9 +389,9 @@ class FakeValve:
             "target_tenths": ((flags & 0x03) << 8) | stored[38],
             "flow_byte": stored[39],
         }
-        if self.platinum:
-            changes |= {"outlets": 0, "held": True, "run_flag": True}
+        if self.hidden_outlet:
+            changes |= {"outlets": 0, "held": True, "flowing": True}
         else:
-            changes |= {"outlets": (flags >> 2) & 0x07, "held": False}
+            changes |= {"outlets": (flags >> 2) & 0x07, "held": False, "flowing": False}
         self._apply(**changes)
         return _OK

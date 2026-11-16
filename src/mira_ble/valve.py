@@ -293,32 +293,41 @@ class MiraValve:
     ) -> State | None:
         """Start the preset stored in ``slot`` (1-based).
 
-        A running preset shows as an open outlet on some valves and as the held bit or the
-        run flag on others. Confirmation accepts an open outlet, or a held bit or run flag
+        Confirmation accepts running water (an open outlet or measured flow), or a held bit
         that was not already set in ``before`` (the state read just before, when given).
+        Measured at the wall of a Mira Platinum, a preset first runs water up to temperature,
+        then holds with the water off until the outlet button is pressed.
         """
         await self._command(protocol.run_preset_request(slot))
         if not confirm:
             return None
 
         def started(state: State) -> bool:
-            if state.outlets:
+            if state.running:
                 return True
             was_held = before.held if before is not None else False
-            was_flagged = before.run_flag if before is not None else False
-            return (state.held and not was_held) or (state.run_flag and not was_flagged)
+            return state.held and not was_held
 
         return await self._confirm(started, f"preset {slot}")
 
     async def stop(self, *, confirm: bool = True) -> State | None:
         """Close every outlet, including a running preset.
 
-        Sends the all-zero outlet command. If the valve does not come to rest, sends the
-        other stop ("run preset 0", the one measured on a Platinum) and checks again.
+        Three stops are tried in turn, each only if water still runs after the one before:
+        the vendor app's pause (the valve's own target and flow with the hold bit, which
+        leaves its settings alone), the all-zero outlet command, and "run preset 0". Stopped
+        means no open outlet and no measured flow; the valve may keep its held bit for a
+        while after. With ``confirm=False`` only the all-zero command is sent.
         """
-        await self._command(protocol.stop_request())
         if not confirm:
+            await self._command(protocol.stop_request())
             return None
+        if await self._pause():
+            try:
+                return await self._confirm_stopped()
+            except NotConfirmed as err:
+                _LOGGER.debug("pause not confirmed (%s); trying the all-zero stop", err)
+        await self._command(protocol.stop_request())
         try:
             return await self._confirm_stopped()
         except NotConfirmed as err:
@@ -331,14 +340,32 @@ class MiraValve:
             raise unconfirmed from err
         return await self._confirm_stopped()
 
+    async def _pause(self) -> bool:
+        """Send the pause built from the valve's present state; False if that was not possible.
+
+        A stop must never wait on this: a state that cannot be read or a pause the valve
+        refuses just moves on to the all-zero stop.
+        """
+        try:
+            state = await self.read_state()
+            await self._command(protocol.pause_request(state))
+        except RequestTimeout as err:
+            _LOGGER.debug("the pause went unanswered: %s", err)
+            await self._transport.connect()  # an unanswered request closes the link
+            return False
+        except (CommandRejected, ProtocolError) as err:
+            _LOGGER.debug("the pause was not possible: %s", err)
+            return False
+        return True
+
     async def _confirm_stopped(self) -> State:
-        """Read until the valve reports itself at rest on consecutive reads."""
-        at_rest = 0
+        """Read until the valve reports no running water on consecutive reads."""
+        dry = 0
 
         def stopped(state: State) -> bool:
-            nonlocal at_rest
-            at_rest = 0 if state.active else at_rest + 1
-            return at_rest >= STOPPED_READS
+            nonlocal dry
+            dry = 0 if state.running else dry + 1
+            return dry >= STOPPED_READS
 
         return await self._confirm(stopped, "stop")
 
@@ -354,11 +381,11 @@ class MiraValve:
             if loop.time() + CONFIRM_INTERVAL > deadline:
                 break
             await asyncio.sleep(CONFIRM_INTERVAL)
+        held = ", held" if state.held else ""
+        flowing = f", flow {state.flow:g} L/min" if state.flow else ""
         raise NotConfirmed(
             f"{what} was acknowledged but the valve still reports outlets "
-            f"{state.outlets.numbers or 'none'}"
-            f"{', held' if state.held else ''}{', run flag' if state.run_flag else ''} "
-            f"after {CONFIRM_TIMEOUT:g} s",
+            f"{state.outlets.numbers or 'none'}{held}{flowing} after {CONFIRM_TIMEOUT:g} s",
             state,
         )
 

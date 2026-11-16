@@ -1,18 +1,18 @@
 # mira-ble
 
 Async Python library for **Mira digital showers** (Activate and current-generation Mode
-valves; Platinum untested) over Bluetooth LE. It reads the valve's state, outlet limits,
+valves, and the Platinum) over Bluetooth LE. It reads the valve's state, outlet limits,
 presets and last run, and runs or stops outlets and presets, with every control command
 confirmed by reading the valve back.
 
 It is the library behind the Home Assistant integration
 [ha-mira-ble](https://github.com/83noit/ha-mira-ble), and has no Home Assistant dependency.
 
-> **Status: alpha, and not yet run on a real valve.** The codecs are tested against replies
-> and frames recorded from real valves by the projects credited below; the transport is
-> adapted from [grundfos-ble](https://github.com/83noit/grundfos-ble), where it runs on real
-> hardware against a different device. Start with the read-only commands and watch it behave
-> before relying on it.
+> **Status: alpha, run by hand on one real valve.** Pairing, every read, starting a preset,
+> running an outlet and both stops were run from macOS against one Mira Platinum, a handful
+> of times, attended. Nothing has run through an ESPHome proxy, on Linux, or on another
+> model; those paths are tested only against a simulation and against replies recorded by
+> the projects credited below. Start with the read-only commands and watch it behave.
 
 > **This drives plumbing that produces hot water.** Never run it unattended. The library
 > cannot stop the water if the link drops or your program exits: the valve's own maximum run
@@ -31,7 +31,7 @@ supported.
 | Model | Status |
 | --- | --- |
 | Mira Activate, current Mira Mode | Protocol measured on real valves by other projects; this library not yet run on one |
-| Mira Platinum | Untested. The vendor app controls the Platinum through the cloud and uses Bluetooth only for commissioning, so running outlets directly over Bluetooth is not known to work. On one unit, state reads, starting a preset and stopping with "run preset 0" were measured to work, and a running preset showed no open outlet; the library is built for both |
+| Mira Platinum | Run on one unit from macOS: pairing, every read, a preset start, an outlet command, the pause and the all-zero stop. A preset warms the water up and then holds until the outlet button or an outlet command starts the shower. The vendor app itself controls the Platinum through the cloud |
 
 ## Install
 
@@ -144,9 +144,12 @@ Units are degrees Celsius, litres per minute, seconds and litres throughout.
   the command, for up to 8 s (valves take time to act). `NotConfirmed` carries the last
   state read: the valve may still be acting, so **if a start is not confirmed, call
   `stop()`**.
-- **"Stopped" means fully at rest.** `State.active` is true for an open outlet, for the held
-  bit and for the run flag; a stop is confirmed only when all are clear on two reads. If the
-  all-zero stop does not get there, "run preset 0" is tried.
+- **"Stopped" means no water.** `State.running` is true for an open outlet or measured
+  flow; a stop is confirmed only when neither shows on two reads. A valve may stay *held*
+  (`State.held`, a pause it ends by itself) for a while after; `State.active` covers both. `stop()`
+  first sends the vendor app's pause (the valve's own temperature and flow with the hold
+  bit), which leaves the valve's settings alone; if water still runs it sends the all-zero
+  stop, then "run preset 0".
 - **Complete state.** A command names every outlet that should run; any other is switched
   off. Which fixture is outlet 1 depends on the plumbing: `outlets-config` and `presets` tell.
 - **Replies are matched by shape.** A reply carries no identifier, so each read accepts only
@@ -172,8 +175,8 @@ also be a proxy that needs a restart. Only the first is a reason to pair again.
 ### Testing your own code
 
 `mira_ble.testing.FakeValve` is a transport standing in for a valve: its state changes when
-commanded, and it can be made slow to act, silent on chosen opcodes, chatty, or to behave as
-a Platinum was measured to. It is a model built from recordings and reports, not the
+commanded, and it can be made slow to act, silent on chosen opcodes, chatty, or to stay held
+after a stop as a Platinum was measured to. It is a model built from recordings and reports, not the
 firmware. The module also ships the recorded replies. It is test support, and may change
 between minor versions.
 

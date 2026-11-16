@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +12,7 @@ from mira_ble import valve as valve_module
 from mira_ble.exceptions import (
     CommandRejected,
     ConnectionLost,
+    MiraError,
     NotConfirmed,
     RequestTimeout,
     UnsafeValue,
@@ -20,6 +22,7 @@ from mira_ble.protocol import Opcode, Outlet, Preset
 from mira_ble.testing import (
     NAME,
     OUTLET_1_CONFIG,
+    PLATINUM_SHOWER,
     SERIAL_BLANK,
     STATE_RUNNING,
     STOP_FRAME,
@@ -42,6 +45,13 @@ def valve(fake: FakeValve) -> MiraValve:
 
 def _opcodes(fake: FakeValve) -> list[int]:
     return [frame.opcode for frame in fake.sent]
+
+
+def _commands(fake: FakeValve) -> list[bytes]:
+    return [frame.encode() for frame in fake.sent if frame.opcode != Opcode.READ_STATE]
+
+
+PAUSE_38C_8LPM = Frame.request(Opcode.SET_OUTLETS, bytes.fromhex("017c2040")).encode().hex(" ")
 
 
 # --- starting ---------------------------------------------------------------------------------
@@ -146,16 +156,91 @@ async def test_a_limit_that_is_not_a_number_does_not_switch_the_limit_off(
 # --- stopping ---------------------------------------------------------------------------------
 
 
-async def test_stop_sends_the_recorded_frame_and_needs_two_reads_at_rest(
+async def test_stop_pauses_with_the_valves_own_settings_and_needs_two_dry_reads(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    """Measured on a Platinum: the app's pause stops the water and keeps the settings."""
+    await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.volume = 3
+    fake.sent.clear()
+    state = await valve.stop()
+    assert state is not None
+    assert not state.running
+    assert state.held
+    assert (state.target_temperature, state.flow_setting, state.volume) == (38.0, 8.0, 3)
+    assert fake.sent[1].encode().hex(" ") == PAUSE_38C_8LPM
+    assert _opcodes(fake) == [
+        Opcode.READ_STATE,
+        Opcode.SET_OUTLETS,
+        Opcode.READ_STATE,
+        Opcode.READ_STATE,
+    ]
+    fake.rest()
+    assert not (await valve.read_state()).active
+
+
+def test_the_pause_copies_the_recorded_state() -> None:
+    frame = protocol.pause_request(protocol.decode_state(PLATINUM_SHOWER))
+    assert frame.encode().hex(" ") == "aa 55 00 ab 04 01 90 20 40 61"  # as sent to the valve
+    with pytest.raises(ValueError, match="decoded"):
+        protocol.pause_request(replace(protocol.decode_state(PLATINUM_SHOWER), raw=b""))
+
+
+async def test_a_refused_pause_falls_back_to_the_all_zero_stop(
     fake: FakeValve, valve: MiraValve
 ) -> None:
     await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.pause_rejected = True
     fake.sent.clear()
     state = await valve.stop()
     assert state is not None
     assert not state.active
-    assert fake.sent[0].encode() == STOP_FRAME
-    assert _opcodes(fake) == [Opcode.SET_OUTLETS, Opcode.READ_STATE, Opcode.READ_STATE]
+    assert _commands(fake)[-1] == STOP_FRAME
+
+
+async def test_an_ignored_pause_falls_back_to_the_all_zero_stop(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.pause_ignored = True
+    fake.sent.clear()
+    state = await valve.stop()
+    assert state is not None
+    assert not state.active
+    assert [frame.hex(" ") for frame in _commands(fake)] == [PAUSE_38C_8LPM, STOP_FRAME.hex(" ")]
+
+
+async def test_a_state_that_cannot_be_read_does_not_hold_up_the_stop(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.reject.add(Opcode.READ_STATE)
+    fake.sent.clear()
+    with pytest.raises(MiraError):
+        await valve.stop()
+    assert STOP_FRAME in _commands(fake)  # the all-zero stop still went out
+
+
+async def test_a_state_read_that_goes_unanswered_does_not_hold_up_the_stop(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    """Silence closes the link; the stop reconnects and sends the all-zero command."""
+    await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.ignore.add(Opcode.READ_STATE)
+    fake.sent.clear()
+    with pytest.raises(RequestTimeout):
+        await valve.stop()
+    assert STOP_FRAME in _commands(fake)
+    assert fake.outlets == 0
+
+
+async def test_stop_without_confirmation_sends_only_the_all_zero_stop(
+    fake: FakeValve, valve: MiraValve
+) -> None:
+    await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
+    fake.sent.clear()
+    assert await valve.stop(confirm=False) is None
+    assert [frame.encode() for frame in fake.sent] == [STOP_FRAME]
 
 
 async def test_a_stop_the_valve_acknowledged_but_ignored_is_never_confirmed(
@@ -170,14 +255,14 @@ async def test_a_stop_the_valve_acknowledged_but_ignored_is_never_confirmed(
     assert fake.outlets == 1
 
 
-async def test_a_platinum_preset_is_not_taken_for_stopped(
+async def test_a_preset_with_no_outlet_bit_is_not_taken_for_stopped(
     fake: FakeValve, valve: MiraValve
 ) -> None:
-    """The held bit with no outlet bit is a running preset there, not a stopped valve."""
-    fake.platinum = True
+    """Water measured flowing with the held bit and no outlet bit is running, not stopped."""
+    fake.hidden_outlet = True
     state = await valve.run_preset(1)
     assert state is not None
-    assert state.active
+    assert state.running
     assert state.outlets is Outlet.NONE
     assert state.held
 
@@ -185,23 +270,22 @@ async def test_a_platinum_preset_is_not_taken_for_stopped(
 async def test_when_the_zero_stop_does_nothing_the_preset_stop_is_tried(
     fake: FakeValve, valve: MiraValve
 ) -> None:
-    """On a Platinum only "run preset 0" was measured to stop the water."""
-    fake.platinum = fake.zero_stop_ignored = True
+    """Where the all-zero stop does nothing, "run preset 0" is the other stop."""
+    fake.hidden_outlet = fake.zero_stop_ignored = fake.pause_ignored = True
     await valve.run_preset(1)
     fake.sent.clear()
     state = await valve.stop()
     assert state is not None
     assert not state.active
     assert not fake.active
-    sent = [frame.encode() for frame in fake.sent if frame.opcode != Opcode.READ_STATE]
-    assert sent == [STOP_FRAME, protocol.preset_stop_request().encode()]
+    assert _commands(fake)[1:] == [STOP_FRAME, protocol.preset_stop_request().encode()]
 
 
 async def test_a_valve_without_the_preset_stop_reports_the_unconfirmed_stop(
     fake: FakeValve, valve: MiraValve
 ) -> None:
     await valve.set_outlets(Outlet.FIRST, temperature=38.0, flow=8.0)
-    fake.zero_stop_ignored = True  # and this valve rejects "run preset 0"
+    fake.zero_stop_ignored = fake.pause_ignored = True  # and it rejects "run preset 0"
     with pytest.raises(NotConfirmed, match="stop was acknowledged") as caught:
         await valve.stop()
     assert isinstance(caught.value.__cause__, CommandRejected)
@@ -212,7 +296,7 @@ async def test_a_stop_that_takes_a_moment_is_confirmed(fake: FakeValve, valve: M
     fake.lag = 3
     state = await valve.stop()
     assert state is not None
-    assert not state.active
+    assert not state.running
 
 
 # --- presets ----------------------------------------------------------------------------------

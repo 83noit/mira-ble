@@ -10,7 +10,7 @@ from bleak.backends.device import BLEDevice
 
 import mira_ble
 from mira_ble.protocol import Opcode
-from mira_ble.testing import STOP_FRAME, FakeValve
+from mira_ble.testing import FakeValve
 
 README = Path(__file__).parent.parent / "README.md"
 
@@ -33,8 +33,8 @@ def test_the_library_example_runs_and_stops_the_valve(capsys) -> None:
         exec(compile(_example(), str(README), "exec"), {"__name__": "__main__"})
     commands = [f.encode() for f in fake.sent if f.opcode == Opcode.SET_OUTLETS]
     assert commands[0].hex(" ") == "aa 55 00 ab 04 01 7c 28 01 ac"  # 38.0 C, 10 L/min, outlet 1
-    assert commands[-1] == STOP_FRAME
-    assert not fake.active
+    assert commands[-1].hex(" ") == "aa 55 00 ab 04 01 7c 28 40 6d"  # the same, paused
+    assert not fake.running
     assert not fake.is_connected
     assert capsys.readouterr().out.strip() == "25.6 10.0"
 

@@ -165,8 +165,10 @@ class State:
     """Outlets the valve reports open."""
     held: bool
     """Bit 6 of the outlet byte; see :data:`OUTLET_FLAG_HELD`."""
-    run_flag: bool
-    """State byte 3 is non-zero: measured as "running" on a Mira Platinum, zero elsewhere."""
+    volume: int
+    """State bytes 2-3: the litres delivered since the valve last left rest. The vendor app
+    reads them as the volume a preset has used; measured on a Mira Platinum for every kind
+    of run. Holds while the valve is held and clears at rest."""
     fault: bool
     """True when the valve flags a fault: outlet byte bit 7, or an error code other than OK."""
     error_code: int
@@ -185,14 +187,23 @@ class State:
     raw: bytes = field(repr=False, default=b"")
 
     @property
+    def running(self) -> bool:
+        """True while water runs: an outlet is reported open, or flow is measured.
+
+        This is the property to test before saying water has stopped. The measured flow
+        counts whatever the outlet bits say.
+        """
+        return bool(self.outlets) or self.flow > 0
+
+    @property
     def active(self) -> bool:
         """True unless the valve reports itself fully at rest.
 
-        Any outlet bit, the held bit or the run flag makes it active. This is the property to
-        test before saying water has stopped: a running preset on a Platinum shows the held
-        bit and no outlet bit.
+        Water running, or the held bit. Measured on a Mira Platinum, the held bit with no
+        flow is a pause: the valve sets it when a preset has warmed the water and waits for
+        the outlet button, and again after a stop, and drops to rest two minutes later.
         """
-        return bool(self.outlets) or self.held or self.run_flag
+        return self.running or self.held
 
     def outlet_running(self, number: int) -> bool:
         """Return True when outlet ``number`` (1 to 3) is reported open."""
@@ -398,16 +409,35 @@ def set_outlets_request(outlets: Outlet, temperature: float | None, flow: float)
     return Frame.request(Opcode.SET_OUTLETS, tenths.to_bytes(2, "big") + bytes((wire_flow, bits)))
 
 
+def pause_request(state: State) -> Frame:
+    """Build the stop the vendor app sends: the valve's own target and flow, with the hold bit.
+
+    The temperature and flow bytes are copied from ``state`` (a state the valve just
+    reported), so nothing is raised and the valve keeps its settings. Measured on a Mira
+    Platinum: the water stops and the valve holds, as after a stop at the wall, then drops
+    to rest two minutes later with its target and flow unchanged.
+    """
+    raw = state.raw
+    if len(raw) != STATE_LENGTH:
+        raise ValueError("pause_request needs a state decoded from a reply")
+    tenths = int.from_bytes(raw[10:12], "big") & TEMPERATURE_MASK
+    return Frame.request(
+        Opcode.SET_OUTLETS, tenths.to_bytes(2, "big") + bytes((raw[12], OUTLET_FLAG_HELD))
+    )
+
+
 def stop_request() -> Frame:
     """Build the command that closes every outlet: four zero bytes.
 
-    Measured to stop Mode valves. Not known to stop a Platinum: see :func:`preset_stop_request`.
+    Measured to stop Mode valves and a Mira Platinum. On the Platinum it also overwrites the
+    valve's resting target and flow with "cold" and the minimum, which the wall controller
+    then shows; :func:`pause_request` does not.
     """
     return Frame.request(Opcode.SET_OUTLETS, bytes(4))
 
 
 def preset_stop_request() -> Frame:
-    """Build the other stop: "run preset 0". Measured to stop a Mira Platinum."""
+    """Build the other stop: "run preset 0". Measured to stop an earlier Mira Platinum."""
     return Frame.request(Opcode.RUN_PRESET, b"\x00")
 
 
@@ -486,7 +516,7 @@ def decode_state(payload: bytes) -> State:
     return State(
         outlets=Outlet(outlet_byte & OUTLET_MASK),
         held=bool(outlet_byte & OUTLET_FLAG_HELD),
-        run_flag=bool(payload[3]),
+        volume=int.from_bytes(payload[2:4], "big"),
         fault=bool(outlet_byte & OUTLET_FLAG_FAULT) or error_code not in (0, ERROR_CODE_OK),
         error_code=error_code,
         water_temperature=water if water <= MAX_PLAUSIBLE_WATER_TEMPERATURE else None,

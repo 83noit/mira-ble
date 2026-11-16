@@ -9,7 +9,8 @@ shower valves, and how it knows it. The sources are not equal, and each fact is 
   (a dual outlet valve), [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA)
   (frames the vendor app sent to an Activate, from an Android HCI capture, and months of
   running through ESPHome proxies), and this project's author's own readings from one
-  Mira Platinum, taken before this library existed.
+  Mira Platinum, taken before this library existed, and from a second Platinum read with
+  this library in November 2026.
 - **app**: read from the vendor's Android app (version 5.5). The app names fields and builds
   every request, but it is not proof of what a given firmware does.
 - **reported**: stated by another project without a recording to check.
@@ -94,9 +95,11 @@ Request payload `02`. Reply, 18 bytes:
 | Offset | Meaning | Source |
 | --- | --- | --- |
 | 0 | System status: bits 0–2 a status value, bits 3–6 flags. Bit 6 is reported to come on after the first poll of a session | app; reported |
-| 3 | Non-zero while running on a Platinum; zero in every recording from other models | measured (Platinum) |
-| 5 | Equals byte 16 in the recorded running states of a Mode valve | measured |
-| 8 | Bits 4–5: Wi-Fi module status (2 = provisioned); `80`/`90` seen at rest | app; measured |
+| 1 | Low five bits: the preset running (the app reads it so, and treats 17 to 20 as a separate kind). On a Platinum it showed only during the shower proper of a preset started and continued at the wall (`24` = slot 4); zero in warm-up, at rest, and throughout any run started over Bluetooth | app; measured (Platinum) |
+| 2–3 | Litres delivered since the valve left rest, 16 bits (the app subtracts it from a preset's volume). On a Platinum it rose by one about every 8 s at 7 L/min, held while the valve was held, cleared at rest. Zero in every recording from other models | app; measured (Platinum) |
+| 5 | Equals byte 16 (the flow reached) on a Mode valve and on a Platinum | measured |
+| 6 | Bit 4 (`10`): set while a Platinum warms a preset up; the app reads the same bit to pick its status label | app; measured (Platinum) |
+| 8–9 | Bits 4–5 of byte 8: Wi-Fi module status (2 = provisioned); `80`/`90` seen at rest. On a Platinum: `A0 00` at rest, `20 00` in warm-up, `60 00` then `E0 00` while held, and during the shower proper `60` plus the seconds the preset has left (`61 DF` = 479 of 480). The app reads the low twelve bits of bytes 8–9 as the remaining time | app; measured |
 | 10–11 | Target temperature, tenths of a degree, in the low nine bits. Higher bits are flags while running (`05 C2` and `0D C2` both reported for 45.0 °C; `09 86` measured on a Platinum). Zero means no target at rest on some models and "cold" while running; a Platinum at rest keeps the last value used | measured |
 | 12 | Flow setting, quarter litres per minute. At rest: a default, or the last value used | measured |
 | 13 | Outlets: `01`, `02`, `04` = outlets 1 to 3; `40` = held; `80` = error | measured (outlets, `40`), app (`80`) |
@@ -104,10 +107,17 @@ Request payload `02`. Reply, 18 bytes:
 | 16 | Flow reached, quarter litres per minute; ramps after a start. One project describes it as a slow counter at rest, which no recording shows | measured; reported |
 | 17 | Error code; `01` = OK. The app holds a table of about 40 codes | app |
 
-**Bit 6 of byte 13 does not mean "stopped".** The app labels it "paused" and sends it to
-close the last outlet. On a Platinum it was measured during a running preset with the water
-temperature rising, with no outlet bit set (later `02` in one run). This library therefore
-treats a valve as at rest only when the outlet bits, bit 6 and byte 3 are all clear.
+**Bit 6 of byte 13 is a hold.** The app labels it "paused" and sends it to close the last
+outlet. On a Platinum (measured, two runs started at the wall) the valve sets it, with no
+outlet bit, when a preset has warmed the water and waits for the outlet button, and again
+after a stop; each time it dropped to rest by itself two minutes later. Flow reads zero
+within a few seconds of the hold starting. An earlier reading on another Platinum had the
+water temperature still rising with bit 6 set and no outlet bit.
+
+This library therefore keeps two notions apart. Water is *running* while an outlet bit is
+set or byte 16 reports flow, whatever the other bits say; a stop is confirmed when neither
+is true on two reads. The valve is *active* while it is running or held, and at rest
+otherwise.
 
 Mira-Activate-HA documents the measured temperature as the value divided by 8.5. The
 recordings (25.6 °C idle, 24.6 → 26.0 °C warming), a Platinum's 20.9 °C at rest and the
@@ -123,7 +133,9 @@ complete desired state; an outlet not named is switched off.
 | `AA 55 00 AB 04 01 7C 40 02 93` | 38.0 °C, 16 L/min, outlet 2 | vendor app, captured |
 | `AA 55 00 AB 04 01 7C 40 03 92` | 38.0 °C, 16 L/min, both outlets | vendor app, captured |
 | `AA 55 00 AB 04 01 86 64 01 66` | 39.0 °C, 25 L/min, outlet 1 | accepted by a Mode valve |
-| `AA 55 00 AB 04 00 00 00 00 52` | stop everything | stopped a Mode valve |
+| `AA 55 00 AB 04 01 90 20 01 A0` | 40.0 °C, 8 L/min, outlet 1 | ran a Platinum, from rest and from its hold |
+| `AA 55 00 AB 04 01 90 20 40 61` | pause: 40.0 °C, 8 L/min, hold bit only | stopped a Platinum, settings kept |
+| `AA 55 00 AB 04 00 00 00 00 52` | stop everything | stopped a Mode valve and a Platinum |
 | `AA 55 00 AB 04 01 86 00 00 CB` | stop, temperature left in place | stopped a Mode valve |
 
 - A temperature of zero with outlets open is the app's "cold". This library sends it only to
@@ -138,15 +150,42 @@ complete desired state; an outlet not named is switched off.
   outlets, not a flag.
 - The outlet state has been reported to show 3 to 5 s after the write, most of it the valve
   acting. This library waits up to 8 s for it.
-- **On a Platinum, `AB` is unverified.** The vendor app never sends it to one.
+- **On a Platinum, `AB` works** (measured on one unit, November 2026), although the vendor
+  app never sends it to one. An outlet command runs water at once, with no warm-up, and is
+  also what starts the shower from the hold a preset leaves after its warm-up.
+- **Two stops, with different after-effects on a Platinum** (measured). The app's pause (the
+  valve's own temperature and flow with bitfield `40`) shuts the water off in about 3 s and
+  leaves the valve held with its settings, exactly as a stop at the wall does: the
+  controller shows the litres used and the valve rests two minutes later. The all-zero stop
+  also shuts the water off and goes straight to rest, but overwrites the resting target and
+  flow with zero and the minimum, which the controller then shows as "cold". This library
+  sends the pause first and the all-zero stop only if water still runs.
 
 ### `B1` run preset (measured)
 
 Payload: the slot, from 1. Measured on Mode valves and on one Platinum. One reading of the
 app's code calls `B1` a read on the Activate; untested there.
 
-**`B1` with slot 0 stopped a running Platinum, reliably** (measured). This library uses it as
-the second stop when the all-zero `AB` does not bring the valve to rest.
+The app sends nothing but `B1 <slot>` to run a preset: no duration, no second kind of
+command. It then shows the preset number, the volume used and the time left from the state
+(bytes 1, 2–3 and 8–9).
+
+**`B1` with slot 0 stopped a running Platinum, reliably** (measured on an earlier unit). This
+library uses it as the second stop when water still runs after the all-zero `AB`.
+
+Started at the wall, a Platinum preset runs in two steps (measured): water runs until it is
+up to temperature, then the valve shuts it off and holds (bit 6 of byte 13) until the
+outlet button is pressed. `B1` over Bluetooth does the same (measured): about 15 s of water,
+then the hold. What happens next depends on what ends the hold (all measured):
+
+- **the same `B1` again** starts the preset proper: the state then carries the preset number
+  (`26` for slot 6) and counts its duration down (`61 66` = 358 of 360 s), and the wall
+  controller shows the timer;
+- **an `AB` outlet command, or the outlet button at the wall**, starts a plain run: no preset
+  number, no countdown, so only the outlet's maximum run time applies.
+
+A preset started at the wall and continued with the outlet button counts down as the first
+case does.
 
 ### `5D` read preset, `DD` write preset (measured)
 
@@ -168,8 +207,9 @@ duration nor volume as empty; this library refuses to write one.
 
 The highest slot is unknown: this library addresses 1 to 9, another uses 0 to 15. The app
 also recognises a shorter reply with a 16-byte name that no recorded valve has produced;
-this library records such a reply as an error and moves on. **A Platinum answered `5D` only
-while running** (measured), so its presets may not be listable at rest.
+this library records such a reply as an error and moves on. One Platinum answered `5D`
+only while running and another answered it at rest (both measured), so presets may not be
+listable at rest on every valve.
 
 ### `1B` read outlet configuration (measured, app)
 
@@ -250,9 +290,9 @@ from a single idle recording), `5F` (controller configuration), `78` (commission
 
 ## Open questions
 
-- Whether a Mira Platinum accepts `AB` over Bluetooth, and which stop it honours.
-- What bit 6 of the outlet byte and byte 3 mean on each model.
-- Which reads a Platinum answers at rest.
+- Whether a Platinum stops the water by itself when a preset's countdown reaches zero.
+- Whether other models take the app's pause the way the Platinum does.
+- What bit 6 of the outlet byte and byte 3 mean on models other than the Platinum.
 - How many bonds a valve keeps.
 - The highest preset slot.
 - Whether a valve joins a command split over several writes.

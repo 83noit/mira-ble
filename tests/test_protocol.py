@@ -20,6 +20,11 @@ from mira_ble.testing import (
     NAME,
     OUTLET_1_CONFIG,
     OUTLET_2_CONFIG,
+    PLATINUM_READY,
+    PLATINUM_REST,
+    PLATINUM_SHOWER,
+    PLATINUM_STOPPING,
+    PLATINUM_WARM_UP,
     PRESET_BATH,
     PRESET_EMPTY,
     PRESET_INVALID,
@@ -159,7 +164,8 @@ def test_idle_state() -> None:
     assert not state.active
     assert state.outlets is Outlet.NONE
     assert not state.held
-    assert not state.run_flag
+    assert state.volume == 0
+    assert not state.running
     assert state.target_temperature is None
     assert state.water_temperature == 25.6
     assert state.flow_setting == 4.0
@@ -208,25 +214,63 @@ def test_every_outlet_bit_is_decoded() -> None:
     assert state.outlet_running(3)
 
 
-def test_a_platinum_preset_is_active_with_no_outlet_bit() -> None:
-    """Measured on a Mira Platinum: outlet byte 40 and state byte 3 set while water ran."""
-    preset = bytearray(STATE_RUNNING)
-    preset[3], preset[13] = 0x01, 0x40
-    state = protocol.decode_state(bytes(preset))
+def test_measured_flow_means_running_whatever_the_outlet_bits_say() -> None:
+    held = bytearray(STATE_RUNNING)
+    held[13] = 0x40
+    state = protocol.decode_state(bytes(held))
     assert state.outlets is Outlet.NONE
     assert state.held
-    assert state.run_flag
+    assert state.flow == 4.5
+    assert state.running
     assert state.active
-    assert state.flow == 4.5  # the measured flow is reported whatever the outlet bits say
 
 
-def test_either_the_held_bit_or_the_run_flag_alone_means_active() -> None:
+def test_the_held_bit_alone_is_active_but_not_running() -> None:
     held = bytearray(STATE_IDLE)
     held[13] = 0x40
-    assert protocol.decode_state(bytes(held)).active
-    flagged = bytearray(STATE_IDLE)
-    flagged[3] = 0x01
-    assert protocol.decode_state(bytes(flagged)).active
+    state = protocol.decode_state(bytes(held))
+    assert state.active
+    assert not state.running
+
+
+def test_the_volume_byte_alone_is_neither_running_nor_active() -> None:
+    counted = bytearray(STATE_IDLE)
+    counted[3] = 0x04
+    state = protocol.decode_state(bytes(counted))
+    assert state.volume == 4
+    assert not state.active
+
+
+@pytest.mark.parametrize(
+    ("payload", "outlets", "held", "running", "active", "volume", "flow"),
+    [
+        (PLATINUM_REST, Outlet.NONE, False, False, False, 0, 0.0),
+        (PLATINUM_WARM_UP, Outlet.FIRST, False, True, True, 1, 7.0),
+        (PLATINUM_READY, Outlet.NONE, True, False, True, 4, 0.0),
+        (PLATINUM_SHOWER, Outlet.FIRST, False, True, True, 2, 7.25),
+        (PLATINUM_STOPPING, Outlet.NONE, True, True, True, 2, 7.25),
+    ],
+)
+def test_the_phases_recorded_on_a_platinum(
+    payload: bytes,
+    outlets: Outlet,
+    held: bool,
+    running: bool,
+    active: bool,
+    volume: int,
+    flow: float,
+) -> None:
+    state = protocol.decode_state(payload)
+    assert (state.outlets, state.held, state.running, state.active) == (
+        outlets,
+        held,
+        running,
+        active,
+    )
+    assert (state.volume, state.flow) == (volume, flow)
+    assert state.target_temperature == 40.0
+    assert state.flow_setting == 8.0
+    assert not state.fault
 
 
 def test_fault_flag_and_error_code() -> None:

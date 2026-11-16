@@ -9,18 +9,20 @@ layer; patch releases do not. Pin the exact version you have tested.
 
 ## [Unreleased]
 
-> **Note:** nothing in this library has yet run on a real valve. Treat it as untested
-> against hardware.
+> **Note:** run by hand on one Mira Platinum from macOS (pairing, reads, preset start, outlet
+> command, both stops). Not yet run through a proxy, on Linux, or on another model.
 
 ### Added
 
 - Frame codec with reassembly, and a transport for local BlueZ adapters and ESPHome proxies:
   pairing on every connection, a settle before the subscribe, replies matched by shape, and
   any request that does not complete closes the link.
-- Typed state (`State.active` covers an open outlet, the held bit and the run flag), outlet
+- Typed state (`State.running` is an open outlet or measured flow; `State.active` adds the
+  held bit; `State.volume` is the litres a Platinum counts while it runs), outlet
   configuration, presets, identity and last-usage reads. Every read except the state is
   optional and tolerates a valve that refuses or ignores it.
-- Confirmed control: run outlets, run a preset, and a stop that falls back to "run preset 0";
+- Confirmed control: run outlets, run a preset, and a stop that sends the vendor app's pause
+  first (keeping the valve's settings), then the all-zero stop, then "run preset 0";
   confirmation waits up to 8 s for the valve to act. Preset write and delete.
 - Temperature limits enforced before anything is written.
 - `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
