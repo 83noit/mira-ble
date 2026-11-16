@@ -1,22 +1,20 @@
 # Protocol of Mira valves with the `267f` service
 
-This describes what mira-ble knows about the Bluetooth protocol of current Mira digital
-shower valves, and how it knows it. The sources are not equal, and each fact is labelled:
+Everything mira-ble knows about how current Mira digital shower valves talk over Bluetooth,
+and how it knows it. Some sources are stronger than others, so each fact says where it comes
+from:
 
-- **measured**: bytes recorded from a real valve, usually after commanding a known value.
+- **measured**: bytes recorded from a real valve, usually after sending it a known value.
   Sources: [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (a Mode dual
   outlet valve with bath filler), [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode)
   (a dual outlet valve), [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA)
   (frames the vendor app sent to an Activate, from an Android HCI capture, and months of
-  running through ESPHome proxies), and this project's author's own readings from one
-  Mira Platinum, taken before this library existed, and from a second Platinum read with
-  this library in November 2026.
-- **app**: read from the vendor's Android app (version 5.5). The app names fields and builds
-  every request, but it is not proof of what a given firmware does.
-- **reported**: stated by another project without a recording to check.
-- **unknown**: nobody has established it.
-
-Nothing here has yet been checked by this library against a valve.
+  running through ESPHome proxies), and this project's own readings from two Mira Platinum
+  valves: one before this library existed, and one with this library in November 2026.
+- **app**: read from the Mira Android app (version 5.5). The app names the fields and builds
+  every request, but that doesn't prove what a given valve's firmware actually does.
+- **reported**: another project says so, without a recording to check.
+- **unknown**: nobody knows yet.
 
 ## GATT
 
@@ -27,36 +25,42 @@ Nothing here has yet been checked by this library against a valve.
 | `267f0003-…` | Replies: notifications |
 | `0000fe59-…` | Nordic Secure DFU (firmware update; not used) |
 
-The service UUID is usually advertised, but it is **not unique to these valves**: other
-devices advertise it too (measured, a user of Mira-Activate-HA). The advertised local name
-identifies a valve: `Mira <code>#<serial>` or `Mira <code> <room name>`, in either case,
+The service UUID is usually advertised, but **other devices use it too** (measured, by a user
+of Mira-Activate-HA). The advertised name is what identifies a valve: `Mira <code>#<serial>` or `Mira <code> <room name>`, in either case,
 where `<code>` is four hexadecimal digits that differ between products (`0051`, `003F` and
 `004C` have been seen). One valve can use both forms.
 
-The Bluetooth address is a static random address that has been seen to change across a power
-cut (measured on an Activate: four addresses for one shower). A bond is kept per address by
-both ESP-IDF and BlueZ, so it does not follow the valve to a new address (inferred).
+The Bluetooth address is a "static random" address, and it has been seen to change after a
+power cut (measured on an Activate: four addresses for one shower). ESP-IDF and BlueZ both
+store a bond per address, so the bond doesn't follow the valve to its new address
+(inferred).
 
 ### Bonding
 
-The valve requires a bonded, encrypted link: without one a write, or even the notification
-subscribe, fails with GATT "insufficient authentication" (measured). It accepts a new bond
-only while it is in pairing mode, and refuses otherwise with SMP reason 82 as seen through
-an ESPHome proxy (measured). Pairing is Just Works; one implementation requests LE Secure
-Connections with bonding and no MITM. Power-cycling the valve is reported to leave it
-pairable for a short while.
+The valve wants a bonded, encrypted link. Without one, a write, or even subscribing to
+notifications, fails with GATT "insufficient authentication" (measured). It only accepts a new
+bond while it's in pairing mode; otherwise it says no, which shows up as SMP reason 82 through
+an ESPHome proxy (measured). Pairing is "Just Works"; one implementation asks for LE Secure
+Connections with bonding and no MITM protection. Turning the valve's power off and on is said
+to leave it pairable for a little while.
 
-How many bonds a valve keeps is unknown: the vendor app's text says ten, with a "Manage
-Paired Devices" list; one project asserts one. A test that would settle it: bond adapter A,
-then bond a phone, then see whether A still gets replies.
+A Mira Platinum keeps at least two bonds at once: a Mac and an ESPHome proxy both stayed
+paired (measured). The Mira app's text says ten, with a "Manage Paired Devices" list; one
+project says one, for its valve. The real limit is unknown.
 
-Through an ESPHome proxy the stored bond is not applied to a new connection by itself: the
-client must ask the proxy to pair on every connection, which re-encrypts from the stored key
-(measured). The pair call can return before the encryption is up, so a subscribe issued
-immediately can still be refused; a pause of about half a second cures it (measured, and the
+Through an ESPHome proxy, a stored bond isn't used automatically on a new connection: the
+client has to ask the proxy to pair every time, which re-encrypts with the stored key
+(measured). That pair call can return before encryption is actually up, so subscribing
+straight away can still be refused; waiting about half a second fixes it (measured, and the
 app waits 500 ms at the same point). A proxy can also keep accepting connections while its
-bond store is stuck, producing the same refusal for days until it is restarted (measured).
-ESP-IDF 5.5.6 forgets a bond after its first session until restart.
+bond store is stuck, giving the same refusal for days until it's restarted (measured).
+
+Two proxy firmware problems can lose the bond. On every ESP-IDF version by default, a failed
+encryption, including a connection that drops mid-encryption, deletes the bond from the
+proxy's flash; from ESP-IDF 5.5.6 the option
+`CONFIG_BT_BLE_SMP_REMOVE_BOND_ON_PAIR_FAIL_AS_CENTRAL` can turn that off (measured once on
+5.5.5; ESP-IDF source). And ESP-IDF 5.5.6 itself forgets a bond after the first connection
+until a restart, which ESPHome 2026.11 works around (esphome#21880, esphome#22559).
 
 ## Frame
 
@@ -69,22 +73,22 @@ AA 55 <channel> <opcode> <length> <payload ...> <checksum>
 - `checksum`: two's complement of the sum of all preceding bytes; a valid frame sums to zero
   modulo 256.
 
-A reply does not echo the request's opcode: its opcode byte is always `01` (measured). A
-reply can therefore be matched to its request only by order and by shape. A client must send
-one request at a time, must not accept a reply of the wrong shape (this library gives every
-read a shape test), and must not reuse a link after a request went unanswered.
+A reply doesn't repeat the request's opcode: its opcode byte is always `01` (measured). So
+the only way to tell which request a reply belongs to is order and shape. That means: send
+one request at a time, don't accept a reply of the wrong shape (this library gives every read
+a shape test), and don't keep using a connection after a request went unanswered.
 
-A one-byte reply `01` acknowledges a command; `80` rejects it (measured). The app treats
-bit 7 of the first payload byte as the error flag. **A valve may also not answer at all** a
-request it does not support: on a Platinum most unsupported opcodes were met with silence,
-not `80` (measured). The app waits 1.8 s for a reply and does not retry.
+A one-byte reply `01` means "done"; `80` means "no" (measured). The app treats bit 7 of the
+first payload byte as the error flag. **A valve may also just not answer** a request it
+doesn't support: on a Platinum most unsupported opcodes got silence, not `80` (measured). The
+app waits 1.8 s for a reply and doesn't retry.
 
-The state reply is 24 bytes, more than fits one notification on the default MTU. The app
-does not reassemble and never requests an MTU, so it relies on a larger MTU being negotiated;
-whether replies ever arrive split is not established. This library reassembles in any case.
-In the other direction, only a preset write (67 bytes) exceeds the default MTU; the app and
-the other projects always write a frame whole, and whether a valve joins a command split
-over several writes is unknown.
+The state reply is 24 bytes, more than fits in one notification at the default MTU. The app
+doesn't reassemble pieces and never asks for a bigger MTU, so it relies on one being
+negotiated; whether replies ever arrive in pieces isn't known. This library puts pieces back
+together anyway. Going the other way, only a preset write (67 bytes) is bigger than the
+default MTU; the app and the other projects always write a frame in one go, and whether a
+valve would put a split command back together is unknown.
 
 ## Opcodes this library uses
 
@@ -114,10 +118,9 @@ after a stop; each time it dropped to rest by itself two minutes later. Flow rea
 within a few seconds of the hold starting. An earlier reading on another Platinum had the
 water temperature still rising with bit 6 set and no outlet bit.
 
-This library therefore keeps two notions apart. Water is *running* while an outlet bit is
-set or byte 16 reports flow, whatever the other bits say; a stop is confirmed when neither
-is true on two reads. The valve is *active* while it is running or held, and at rest
-otherwise.
+So this library keeps two ideas apart. Water is *running* while an outlet bit is set or
+byte 16 shows flow, whatever the other bits say, and a stop only counts once neither is true
+on two reads. The valve is *active* while it's running or held, and at rest otherwise.
 
 Mira-Activate-HA documents the measured temperature as the value divided by 8.5. The
 recordings (25.6 °C idle, 24.6 → 26.0 °C warming), a Platinum's 20.9 °C at rest and the
@@ -250,8 +253,8 @@ undecoded recording fits it. Scales unknown; not implemented.
 
 ## Opcodes this library deliberately does not send
 
-The vendor app builds these. They change persistent state that is hard or impossible to
-recover, or have unknown effects.
+The Mira app builds these. They change lasting settings that are hard or impossible to put
+back, or nobody knows what they do.
 
 | Opcode | What the app uses it for | Why not |
 | --- | --- | --- |
@@ -264,8 +267,8 @@ recover, or have unknown effects.
 | `BC` | Warm-up setting | Persistent; values partly known |
 | `C4` | Write the valve's name | Persistent |
 
-**Do not sweep opcodes on a valve you care about.** Blind probing with well-formed one-byte
-payloads reaches `F4` and `BC`, both of which acknowledge. One valve probed that way was
+**Don't sweep opcodes on a valve you care about.** Trying opcodes blindly with well-formed
+one-byte payloads hits `F4` and `BC`, and both say "done". One valve probed that way was
 later replaced.
 
 Read opcodes the app builds that are not implemented here: `32` (firmware and type
@@ -283,8 +286,10 @@ from a single idle recording), `5F` (controller configuration), `78` (commission
   answer a state read on a slow link through a proxy, and occasionally to stall beyond 10 s.
   A 30–75 ms interval with a 20 s supervision timeout is reported to work well through a
   proxy; 15 ms overloaded a shared proxy radio.
-- This library does not hold the link: callers connect, read or command, and disconnect,
-  keeping the link only for as long as they need fast readings.
+- This library leaves it to the caller how long to keep a connection. Through an ESPHome
+  proxy, a connection kept open more than a few seconds answered in 7 to 10 s instead of
+  0.1 to 0.3 s (measured), so the Home Assistant integration connects afresh every time; from
+  a Mac, a connection kept open for minutes stayed quick (measured).
 - A Mira Platinum accepts at least two connections at once (measured 2026-11-16: a Mac held one
   for five minutes, reading every 5 s, while Home Assistant connected eight times through an
   ESPHome proxy; nothing failed) and keeps advertising while connected. It also keeps at least
@@ -297,7 +302,7 @@ from a single idle recording), `5F` (controller configuration), `78` (commission
 - Whether a Platinum stops the water by itself when a preset's countdown reaches zero.
 - Whether other models take the app's pause the way the Platinum does.
 - What bit 6 of the outlet byte and byte 3 mean on models other than the Platinum.
-- How many bonds a valve keeps.
+- How many bonds and connections a valve takes at most.
 - The highest preset slot.
 - Whether a valve joins a command split over several writes.
 - The meaning of the status bits in state bytes 0 to 9.

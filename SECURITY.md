@@ -1,24 +1,24 @@
 # Security policy
 
-## Reporting a vulnerability
+## Reporting a problem
 
-Please report privately through GitHub private vulnerability reporting: open the
-[Security tab](https://github.com/83noit/mira-ble/security) of this repository and choose "Report a vulnerability".
-Do not open a public issue for a vulnerability.
+Please report it privately, through GitHub's private vulnerability reporting: open the
+[Security tab](https://github.com/83noit/mira-ble/security) of this repository and choose "Report a
+vulnerability". Please don't open a public issue for it.
 
-## Scope
+## What counts
 
-This library drives hot water, so safety defects are in scope and are treated as security issues. In
+This library turns hot water on and off, so safety bugs count as security bugs. In
 particular:
 
-- anything that could make the shower run hotter than the temperature that was asked for, or
-  bypass the temperature limits;
-- anything that reports water as stopped when it is still running.
+- anything that could make the shower run hotter than asked, or get round the temperature
+  limits;
+- anything that says the water has stopped when it's still running.
 
 ## Supported versions
 
-Only the latest release is supported. Fixes are released as a new version, not backported.
+Only the latest release. Fixes come out as a new version; older versions aren't patched.
 
 ## Bounty
 
-There is no bug bounty.
+There's no bug bounty.

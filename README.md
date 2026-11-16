@@ -1,39 +1,40 @@
 # mira-ble
 
-Async Python library for the **Mira Platinum** digital shower over Bluetooth LE. Mira Activate
-and current-generation Mira Mode valves speak the same protocol and are expected to work, but
-this library has not been run on one (see [Supported hardware](#supported-hardware)). It reads the valve's state, outlet limits,
-presets and last run, and runs or stops outlets and presets, with every control command
-confirmed by reading the valve back.
+An async Python library for talking to a **Mira Platinum** digital shower over Bluetooth LE.
+It reads what the valve is doing, its outlet limits, its presets and its last shower, and it
+can start and stop outlets and presets. Every command is checked by reading the valve back.
 
-It is the library behind the Home Assistant integration
-[ha-mira-ble](https://github.com/83noit/ha-mira-ble), and has no Home Assistant dependency.
+Mira Activate and current Mira Mode valves speak the same language and should work too, but
+this library hasn't been run on one yet (see [Supported hardware](#supported-hardware)).
 
-> **Status: alpha, run on one real valve.** Pairing, every read, starting a preset, running an
-> outlet and both stops were run against one Mira Platinum, a handful of times, attended:
-> from macOS, and through an ESPHome proxy under Home Assistant. Nothing has run on a local
-> Linux adapter or on another model; those paths are tested only against a simulation and
-> against replies recorded by the projects credited below. Start with the read-only commands
-> and watch it behave.
+It's the library behind the Home Assistant integration
+[ha-mira-ble](https://github.com/83noit/ha-mira-ble), but it doesn't need Home Assistant.
 
-> **This drives plumbing that produces hot water.** Never run it unattended. The library
-> cannot stop the water if the link drops or your program exits: the valve's own maximum run
-> time is the only backstop then.
+> **Status: early days.** Pairing, every read, starting a preset, running an outlet and both
+> ways of stopping have been run on one Mira Platinum, a handful of times, with someone
+> watching: from a Mac, and through an ESPHome proxy under Home Assistant. Nothing has run on
+> a local Linux adapter or on another model yet; those paths are only tested against a
+> simulated valve and against replies recorded by the projects credited below. Start with the
+> read-only commands and watch how it behaves.
 
-This project is not affiliated with Mira Showers or Kohler. Mira and Kohler are trademarks of
-their owners.
+> **This turns real hot water on and off.** Never leave it running unattended. If the
+> connection drops or your program exits, the library can't stop the water: at that point the
+> valve's own maximum run time is the only thing that will.
+
+This project has nothing to do with Mira Showers or Kohler. Mira and Kohler are their
+trademarks.
 
 ## Supported hardware
 
-Valves whose Bluetooth name looks like `Mira 0051#…` or `Mira 004C Bathroom` and that offer
+Valves whose Bluetooth name looks like `Mira 0051#…` or `Mira 004C Bathroom`, and which offer
 the GATT service `267f0001-eb15-43f5-94c3-67d2221188f7`. Older Mira Mode valves offer
-`bccb0001-ca66-11e5-88a4-0002a5d5c51b` and speak an unrelated protocol; they are not
+`bccb0001-ca66-11e5-88a4-0002a5d5c51b` instead and speak something else entirely; they aren't
 supported.
 
 | Model | Status |
 | --- | --- |
-| Mira Platinum | Run on one unit from macOS: pairing, every read, a preset start, an outlet command, the pause and the all-zero stop. A preset warms the water up and then holds until the outlet button or an outlet command starts the shower. The vendor app itself controls the Platinum through the cloud |
-| Mira Activate, current Mira Mode | **Expected to work, untested.** The protocol was measured on real valves by the projects credited below, and this library is tested against their recordings, but it has not been run on one. For those valves the field-proven choices are [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (Activate) and [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) or [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (Mode). Testers are welcome: please [open an issue](https://github.com/83noit/mira-ble/issues) |
+| Mira Platinum | Run on one valve from a Mac and through an ESPHome proxy: pairing, every read, starting a preset, the outlet command, and both ways of stopping. A preset warms the water up, then waits until the outlet button or an outlet command starts the shower. (The Mira app itself controls the Platinum through the cloud, not Bluetooth.) |
+| Mira Activate, current Mira Mode | **Should work, not tried yet.** Other projects worked out the protocol on real valves, and this library is tested against their recordings, but it hasn't been run on one. For those valves the safe bet today is [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (Activate) or [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) / [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (Mode). If you'd like to try this one, please [open an issue](https://github.com/83noit/mira-ble/issues) |
 
 ## Install
 
@@ -45,34 +46,35 @@ Python 3.13 or newer.
 
 ## Pairing
 
-The valve only talks over a bonded link, and only accepts a new bond while it is in pairing
-mode: on a controller with a button, hold it for five seconds until it flashes; on a dial
-controller use Menu → Settings → Connect. Switching the valve's power off and on is reported
-to leave it pairable for a short while as well. Pairing is "Just Works" (no code to enter).
+The valve only talks over a bonded (paired and encrypted) connection, and only accepts a new
+bond while it's in pairing mode. On a controller with a button, hold it for five seconds
+until it flashes; on a dial controller, go Menu → Settings → Connect. Turning the valve's
+power off and on is said to leave it pairable for a little while too. Pairing is "Just Works"
+(no code to type).
 
-The library pairs on every connection, which is a quick re-encrypt once a bond exists. The
-bond lives on the adapter (or ESPHome proxy) that made it. The vendor app's own text says a
-valve keeps up to ten paired devices and lists them under "Manage Paired Devices"; nobody
-here has measured the limit.
+The library pairs on every connection; once a bond exists, that's just a quick re-encrypt.
+The bond lives on whichever adapter (or ESPHome proxy) made it. A Mira Platinum was seen
+keeping at least two bonds at once; the Mira app says a valve keeps up to ten.
 
-If the valve is reset, or the device is removed from it in the app, the adapter keeps
-offering keys the valve no longer accepts. Forget the valve on the adapter and pair again
+If the valve is reset, or the device is removed in the app, the adapter keeps offering a key
+the valve no longer accepts. Make the adapter forget the valve and pair again
 (`remove_bluez_bond()` does that on Linux).
 
-**An ESPHome proxy can lose the bond, in two different ways:**
+**An ESPHome proxy can lose the bond, in two ways:**
 
-- *A connection that drops while it is being encrypted erases the bond from the proxy's
-  flash.* This is how ESP-IDF's Bluetooth stack is built, on every version; it happened once
-  in about 150 connections on a marginal link (-76 dBm). The valve then has to be paired
-  again. A strong signal makes it rare. From ESP-IDF 5.5.6 the proxy can be built with
-  `CONFIG_BT_BLE_SMP_REMOVE_BOND_ON_PAIR_FAIL_AS_CENTRAL: "n"` to keep the bond; running on
-  this project's proxy, but not yet seen through a dropped link. The proxy then never drops a
-  key by itself, so after a valve reset pairing fails until it does; the integration's
-  [Known issues](https://github.com/83noit/ha-mira-ble#known-issues) give the options,
-  including `CONFIG_BT_BLE_SMP_UNBOND_ON_KEY_MISSING` and its security cost.
-- *ESP-IDF 5.5.6 (ESPHome 2026.10.x) forgets a bond after the first connection*, until the
-  proxy restarts ([esphome#21880](https://github.com/esphome/esphome/issues/21880)). Pin the
-  proxy to ESP-IDF 5.5.5, or use ESPHome 2026.11 or later, which works around it.
+- *A connection that drops while it's being encrypted wipes the bond from the proxy.* That's
+  how ESP-IDF's Bluetooth code works, on every version. It happened once in about 150
+  connections on a weak signal (-76 dBm), and the valve then had to be paired again. A strong
+  signal makes it rare. From ESP-IDF 5.5.6 the proxy can be built with
+  `CONFIG_BT_BLE_SMP_REMOVE_BOND_ON_PAIR_FAIL_AS_CENTRAL: "n"` to keep the bond. It's running
+  on this project's proxy, but no connection has dropped on it yet. With that setting the
+  proxy never drops a key by itself, so after a valve reset pairing keeps failing until it
+  does; the integration's [Known issues](https://github.com/83noit/ha-mira-ble#known-issues)
+  lay out the options, including `CONFIG_BT_BLE_SMP_UNBOND_ON_KEY_MISSING` and its security
+  catch.
+- *ESPHome 2026.10 (ESP-IDF 5.5.6) forgets a bond after the first connection*, until the
+  proxy restarts ([esphome#21880](https://github.com/esphome/esphome/issues/21880)). ESPHome
+  2026.11 fixes it.
 
 ## Command line
 
@@ -100,23 +102,23 @@ $ mira-ble stop <address>
 idle            water 31.0 C  flow 0 of 4 L/min
 ```
 
-The output above is illustrative. `scan`, `info`, `status`, `watch`, `outlets-config` and
-`presets` change nothing on the valve: **start with those**, with `watch --raw` running while
-someone uses the shower at the wall, before sending anything.
+The output above is made up. `scan`, `info`, `status`, `watch`, `outlets-config` and
+`presets` don't change anything on the valve: **start with those**. Running `watch --raw`
+while someone uses the shower at the wall is a good first step before sending anything.
 
-- `run` reads the outlets' own maximum temperature first and applies the lower of that and
-  `--max-temperature` (default 45 °C; give it before the command name).
-- If a `run` or `start` cannot be confirmed, the tool sends a stop before exiting and says
-  so; if it prints `CHECK THE SHOWER`, go and look.
+- `run` first reads the outlets' own maximum temperature and uses the lower of that and
+  `--max-temperature` (default 45 °C; put it before the command name).
+- If a `run` or `start` can't be confirmed, the tool sends a stop before it exits and tells
+  you. If it prints `CHECK THE SHOWER`, go and look.
 - `start` sends the preset command once. On a Mira Platinum that warms the water up and then
-  holds, waiting; `start --through` waits for the hold and sends the command again, which
-  runs the preset with its own timer (water then runs for the preset's whole duration).
-- `presets` exits with an error and a reason when it could read none; some valves only
+  waits. `start --through` waits for that pause and sends the command again, which starts the
+  preset for real, with its own timer (the water then runs for the whole preset).
+- `presets` exits with an error, and says why, if it couldn't read any; some valves only
   answer preset reads while running.
-- `-v` logs every frame, from this package only. Frames carry the valve's name and serial
-  number when those are read.
-- Addresses are MAC addresses on Linux and Windows, and UUIDs on macOS. Flow is litres per
-  minute; the vendor app shows the same number on its 0 to 25 scale.
+- `-v` logs every message sent and received (this package only). They include the valve's
+  name and serial number once those have been read.
+- Addresses are MAC addresses on Linux and Windows, and UUIDs on macOS. Flow is in litres per
+  minute; the Mira app shows the same number on its 0 to 25 scale.
 
 ## Library
 
@@ -147,90 +149,91 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Units are degrees Celsius, litres per minute, seconds and litres throughout.
+Units are degrees Celsius, litres per minute, seconds and litres everywhere.
 
-### What the control commands guarantee
+### What you can count on
 
-- **Temperature limits before anything is written.** A target above `max_temperature`
-  (default 45 °C), above a per-call limit, or above the absolute ceiling of 48 °C raises
-  `UnsafeValue`; so does a limit that is not a number.
-- **Confirmation by the valve's state, within a few seconds.** `set_outlets`, `stop` and
-  `run_preset` require the valve's acknowledgement and then read the state until it shows
-  the command, for up to 8 s (valves take time to act). `NotConfirmed` carries the last
-  state read: the valve may still be acting, so **if a start is not confirmed, call
-  `stop()`**.
-- **"Stopped" means no water.** `State.running` is true for an open outlet or measured
-  flow; a stop is confirmed only when neither shows on two reads. A valve may stay *held*
-  (`State.held`, a pause it ends by itself) for a while after; `State.active` covers both. `stop()`
-  first sends the vendor app's pause (the valve's own temperature and flow with the hold
-  bit), which leaves the valve's settings alone; if water still runs it sends the all-zero
-  stop, then "run preset 0".
+- **Temperature limits are checked before anything is sent.** A target above
+  `max_temperature` (default 45 °C), above a per-call limit, or above the hard ceiling of
+  48 °C raises `UnsafeValue`, and so does a limit that isn't a number.
+- **Commands are checked against the valve's state.** `set_outlets`, `stop` and `run_preset`
+  wait for the valve to say yes, then keep reading its state until the change shows up, for up
+  to 8 s (valves take a moment). `NotConfirmed` carries the last state read. The valve may
+  still be getting there, so **if a start isn't confirmed, call `stop()`**.
+- **"Stopped" means no water.** `State.running` is true when an outlet is open or the valve
+  measures flow, and a stop only counts once neither is true on two reads in a row. The valve
+  may stay *held* afterwards (`State.held`, a pause it ends by itself); `State.active` covers
+  both. `stop()` first sends the same pause the Mira app uses (the valve's own temperature and
+  flow, plus the hold bit), which leaves the valve's settings alone. If water is still running
+  after that, it sends the all-zero stop, then "run preset 0".
 - **One word for what the valve is doing.** `State.phase` is `rest`, `warming_up`, `paused`,
-  `preset` or `running`; `State.preset` and `State.time_remaining` give the running preset
-  and the seconds it has left by the valve's own count, and `State.volume` the litres used.
-  `run_preset()` sends the preset command once; `run_preset_through()` carries a preset past
-  the warm-up hold measured on a Mira Platinum.
-- **Complete state.** A command names every outlet that should run; any other is switched
-  off. Which fixture is outlet 1 depends on the plumbing: `outlets-config` and `presets` tell.
-- **Replies are matched by shape.** A reply carries no identifier, so each read accepts only
-  a reply of the right shape, and a request that does not complete (timeout, cancellation)
-  closes the link.
-- **Prefer short connections through a proxy.** Measured through an ESPHome proxy on a Mira
-  Platinum, requests on a new link take 0.1 to 0.3 s; once the link has been up for a few
-  seconds they take 7 to 10 s and often time out. `BleTransport.link_age` says how old the
-  link is. From macOS a link held for minutes stayed quick.
-- **Optional reads.** `read_identity()` and `probe()` record what a valve refused or ignored
-  in `errors` and carry on; only the state read must succeed.
-- **No configuration writes.** The library does not implement the opcodes that change outlet
-  limits, controller configuration, Wi-Fi credentials, commissioning state, the serial number
-  or that reset the valve. Preset write and delete are the only persistent writes; a write
-  replaces the whole slot for good, so note down what is there first.
+  `preset` or `running`. `State.preset` and `State.time_remaining` give the running preset and
+  how many seconds it has left by the valve's count, and `State.volume` the litres used so far.
+  `run_preset()` sends the preset command once; `run_preset_through()` also takes a preset
+  past the warm-up pause seen on a Mira Platinum.
+- **Commands describe the whole picture.** A command lists every outlet that should be on;
+  anything not listed gets turned off. Which tap is outlet 1 depends on the plumbing:
+  `outlets-config` and `presets` will tell you.
+- **Replies are matched by their shape.** Replies don't say which question they answer, so
+  each read only accepts a reply that looks right for it, and a request that doesn't finish
+  (timeout, cancellation) closes the connection.
+- **Keep connections short through a proxy.** Through an ESPHome proxy, requests on a fresh
+  connection took 0.1 to 0.3 s, and once the connection had been open a few seconds they took
+  7 to 10 s and often timed out. `BleTransport.link_age` tells you how old the connection is.
+  From a Mac, a connection kept open for minutes stayed quick.
+- **Some reads are optional.** `read_identity()` and `probe()` note in `errors` anything the
+  valve refused or ignored, and carry on; only the state read has to work.
+- **No settings changes.** The library doesn't include the commands that change outlet
+  limits, controller settings, Wi-Fi details, installer settings or the serial number, or that
+  reset the valve. Writing and deleting presets are the only lasting changes it can make; a
+  write replaces the whole slot for good, so note down what's there first.
 
 ### Errors
 
-Everything derives from `MiraError`. Connection problems are `MiraConnectionError`
-(`PairingRequired`, `ConnectionLost`, `RequestTimeout`); the valve refusing a command is
-`CommandRejected`; a malformed reply is `ProtocolError`.
+Everything comes from `MiraError`. Connection problems are `MiraConnectionError`
+(`PairingRequired`, `ConnectionLost`, `RequestTimeout`); the valve saying no to a command is
+`CommandRejected`; a garbled reply is `ProtocolError`.
 
-`PairingRequired.refused` tells an outright refusal (the valve is not in pairing mode and the
-adapter holds no bond it accepts) from a link that merely could not be encrypted, which can
-also be a proxy that needs a restart. Only the first is a reason to pair again.
+`PairingRequired.refused` separates a flat refusal (the valve isn't in pairing mode and the
+adapter has no bond it accepts) from a connection that just couldn't be encrypted, which can
+also be a proxy that needs a restart. Only a flat refusal is a reason to pair again.
 
 ### Testing your own code
 
-`mira_ble.testing.FakeValve` is a transport standing in for a valve: its state changes when
-commanded, and it can be made slow to act, silent on chosen opcodes, chatty, or to stay held
-after a stop as a Platinum was measured to. It is a model built from recordings and reports, not the
-firmware. The module also ships the recorded replies. It is test support, and may change
-between minor versions.
+`mira_ble.testing.FakeValve` stands in for a valve: its state changes when you send it
+commands, and you can make it slow, silent on some requests, chatty, or behave the way a
+Platinum was seen to (pausing after a stop, warming presets up first). It's a model built
+from recordings and reports, not the real firmware. The module also includes the recorded
+replies. It's there to help with tests, and may change between minor versions.
 
 ## Versions
 
-Pin an exact version. While the version is 0.x a minor release may change the API or the
-protocol layer; read the
+Pin an exact version. While the version is 0.x, a minor release may change the API or the
+protocol code, so read the
 [changelog](https://github.com/83noit/mira-ble/blob/main/CHANGELOG.md) before upgrading. The
-supported API is what `mira_ble` exports.
+supported API is whatever `mira_ble` exports.
 
 ## Protocol
 
 [docs/protocol.md](https://github.com/83noit/mira-ble/blob/main/docs/protocol.md) describes
-the frame format, every opcode the vendor app builds, the layouts this library decodes, and
-where each fact comes from.
+the message format, every command the Mira app knows how to build, the layouts this library
+decodes, and where each fact comes from.
 
 ## Acknowledgements
 
-- [Ryan Shaw, mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (MIT):
-  the state and preset layouts, verified by commanding known values on a real valve, and the
-  recorded replies used as test vectors here.
+- [Ryan Shaw, mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (MIT): the
+  state and preset layouts, worked out by sending known values to a real valve, and the
+  recorded replies used in the tests here.
 - [Hayden Griffin, ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) (MIT): the
-  outlet configuration and last-usage layouts, with recordings.
+  outlet settings and last-shower layouts, with recordings.
 - [Jon Williams, Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (MIT):
-  frames captured from the vendor app, and the hard-won lessons about ESPHome proxies:
-  pairing on every connection, settling before the subscribe, and not re-pairing on suspicion.
+  messages captured from the Mira app, and hard-won lessons about ESPHome proxies: pair on
+  every connection, give the link a moment before subscribing, and don't re-pair just because
+  something looks off.
 - [Nigel Hannam, shower-controller-documentation](https://github.com/nhannam/shower-controller-documentation):
   the older generation's protocol.
-- [ble-bond](https://github.com/83noit/ble-bond) (MIT, same author): the bonded Bluetooth
-  link this library runs on, shared with grundfos-ble. Its BlueZ pairing agent is adapted
+- [ble-bond](https://github.com/83noit/ble-bond) (MIT, same author): the Bluetooth connection
+  code this library runs on, shared with grundfos-ble. Its BlueZ pairing agent is adapted
   from [alpha-hwr](https://github.com/eman/alpha-hwr), credited there.
 
 Copyright notices: [THIRD_PARTY_NOTICES.md](https://github.com/83noit/mira-ble/blob/main/THIRD_PARTY_NOTICES.md).

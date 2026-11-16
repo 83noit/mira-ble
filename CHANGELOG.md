@@ -1,58 +1,63 @@
 # Changelog
 
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+Notable changes, newest first. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-While the version is 0.x, minor versions (0.1 to 0.2) may break the public API and the protocol
-layer; patch releases do not. Pin the exact version you have tested.
+While the version is 0.x, a minor release (0.1 to 0.2) may break the API or the protocol
+code; patch releases won't. Pin the exact version you've tested.
 
 ## [Unreleased]
 
 ### Changed
 
-- The README and the package description present the library as Platinum-first: Activate and
-  Mode valves are expected to work but untested, with pointers to the projects written on them.
+- The README and the package description now say what's actually been tried: the library is
+  for the Mira Platinum first. Activate and Mode valves should work but haven't been tried,
+  and the README points to the projects built on them.
+- The docs say a Mira Platinum takes two connections at once (measured), and explain the
+  proxy settings around losing and keeping a bond.
 
 ## [0.1.1] - 2026-11-16
 
 ### Fixed
 
-- `State.phase` is `paused` as soon as the valve is held with no outlet open. The second or
-  two of flow still measured as a warm-up ends or after a stop no longer shows as `running`
-  (seen in Home Assistant on a real shower). `State.running` is unchanged.
+- `State.phase` now says `paused` as soon as the valve holds with no outlet open. Before, the
+  second or two of water still draining after a warm-up or a stop showed as `running` (seen
+  in Home Assistant during a real shower). `State.running` hasn't changed.
 
 ## [0.1.0] - 2026-11-16
 
-> **Note:** run on one Mira Platinum only: by hand from macOS (pairing, reads, preset start,
-> outlet command, both stops) and through an ESPHome proxy under Home Assistant. Not yet run on
-> a local Linux adapter or on another model.
+First release. It has only run on one Mira Platinum: by hand from a Mac (pairing, reads,
+starting a preset, the outlet command, both ways of stopping) and through an ESPHome proxy
+under Home Assistant. Not tried yet on a local Linux adapter or on another model.
 
 ### Added
 
-- Frame codec with reassembly, and a transport for local BlueZ adapters and ESPHome proxies:
-  pairing on every connection, a settle before the subscribe, replies matched by shape, and
-  any request that does not complete closes the link.
-- Typed state (`State.running` is an open outlet or measured flow; `State.active` adds the
-  held bit; `State.volume` is the litres a Platinum counts while it runs), outlet
-  configuration, presets, identity and last-usage reads. Every read except the state is
-  optional and tolerates a valve that refuses or ignores it.
-- Confirmed control: run outlets, run a preset, and a stop that sends the vendor app's pause
-  first (keeping the valve's settings), then the all-zero stop, then "run preset 0";
-  confirmation waits up to 8 s for the valve to act. Preset write and delete.
-- `State.phase`, `State.preset`, `State.time_remaining` and `State.warming_up`, and
-  `run_preset_through()` / `mira-ble start --through` for valves that warm a preset up and
-  then hold (measured on a Mira Platinum: the same preset command during the hold starts the
-  preset proper).
-- The proxy or adapter Home Assistant chose is recorded for every connection attempt,
-  refused ones included, so a refusal is not pinned on the proxy that merely last heard the
-  valve. One BlueZ pairing agent at a time. Both ported from grundfos-ble.
-- `BleTransport.link_age`: through an ESPHome proxy a link held for more than a few seconds
-  was measured to answer slowly, so callers can choose to reconnect.
-- The Bluetooth link is [ble-bond](https://github.com/83noit/ble-bond), the package shared
-  with grundfos-ble; `BleTransport` is a thin adapter over it and keeps its interface. Frames
-  are logged on `ble_bond.frames` (`mira-ble -v` turns it on).
-- Temperature limits enforced before anything is written.
-- `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
+- Building and decoding messages, including replies that arrive in pieces, and a connection
+  that works with local BlueZ adapters and ESPHome proxies: it pairs on every connection,
+  waits a moment before subscribing, matches replies by their shape, and closes the
+  connection if a request doesn't finish.
+- Typed readings: the state (`State.running` is "water is coming out", `State.active` also
+  counts the paused state, `State.volume` is the litres a Platinum counts during a shower),
+  outlet settings, presets, identity and the last shower. Every read except the state is
+  optional and copes with a valve that refuses or ignores it.
+- Commands that check they worked: running outlets, running a preset, and a stop that first
+  sends the Mira app's own pause (which keeps the valve's settings), then the all-zero stop,
+  then "run preset 0". Each waits up to 8 s for the valve to act. Writing and deleting
+  presets.
+- `State.phase`, `State.preset`, `State.time_remaining` and `State.warming_up`, plus
+  `run_preset_through()` / `mira-ble start --through` for valves that warm a preset up and then
+  wait (seen on a Mira Platinum: sending the same preset again during that wait starts it for
+  real).
+- For every connection attempt, the adapter or proxy Home Assistant picked is recorded,
+  failed attempts included, so a refusal isn't blamed on whichever proxy last happened to hear
+  the valve. Only one BlueZ pairing agent at a time. Both come from grundfos-ble.
+- `BleTransport.link_age`: through an ESPHome proxy, a connection kept open for more than a
+  few seconds was measured to answer slowly, so callers can choose to reconnect.
+- The Bluetooth connection code is [ble-bond](https://github.com/83noit/ble-bond), shared
+  with grundfos-ble; `BleTransport` sits on top of it and keeps its interface. Messages are
+  logged on `ble_bond.frames` (`mira-ble -v` turns that on).
+- Temperature limits are checked before anything is sent.
+- The `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
   `outlets-config` and `presets`.
-- `mira_ble.testing`: a simulated valve and replies recorded from real valves.
+- `mira_ble.testing`: a simulated valve, and replies recorded from real valves.
