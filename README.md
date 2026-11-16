@@ -1,7 +1,8 @@
 # mira-ble
 
-Async Python library for **Mira digital showers** (Activate and current-generation Mode
-valves, and the Platinum) over Bluetooth LE. It reads the valve's state, outlet limits,
+Async Python library for the **Mira Platinum** digital shower over Bluetooth LE. Mira Activate
+and current-generation Mira Mode valves speak the same protocol and are expected to work, but
+this library has not been run on one (see [Supported hardware](#supported-hardware)). It reads the valve's state, outlet limits,
 presets and last run, and runs or stops outlets and presets, with every control command
 confirmed by reading the valve back.
 
@@ -31,8 +32,8 @@ supported.
 
 | Model | Status |
 | --- | --- |
-| Mira Activate, current Mira Mode | Protocol measured on real valves by other projects; this library not yet run on one |
 | Mira Platinum | Run on one unit from macOS: pairing, every read, a preset start, an outlet command, the pause and the all-zero stop. A preset warms the water up and then holds until the outlet button or an outlet command starts the shower. The vendor app itself controls the Platinum through the cloud |
+| Mira Activate, current Mira Mode | **Expected to work, untested.** The protocol was measured on real valves by the projects credited below, and this library is tested against their recordings, but it has not been run on one. For those valves the field-proven choices are [Mira-Activate-HA](https://github.com/jonwilliams84/Mira-Activate-HA) (Activate) and [ha-mira-mode](https://github.com/HaydenGriffin/ha-mira-mode) or [mira-mode-control](https://github.com/ryan-shaw/mira-mode-control) (Mode). Testers are welcome: please [open an issue](https://github.com/83noit/mira-ble/issues) |
 
 ## Install
 

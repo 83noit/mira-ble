@@ -9,6 +9,11 @@ layer; patch releases do not. Pin the exact version you have tested.
 
 ## [Unreleased]
 
+### Changed
+
+- The README and the package description present the library as Platinum-first: Activate and
+  Mode valves are expected to work but untested, with pointers to the projects written on them.
+
 ## [0.1.1] - 2026-11-16
 
 ### Fixed

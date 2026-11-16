@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mira-ble"
 dynamic = ["version"]
-description = "Async Python library for Mira digital showers (Platinum, Activate, Mode) over Bluetooth LE"
+description = "Async Python library for the Mira Platinum digital shower over Bluetooth LE (Activate and Mode expected to work, untested)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
