@@ -204,6 +204,8 @@ class FakeValve:
     pause_ignored: bool = False
     pause_rejected: bool = False
     connected: bool = False
+    link_age: float | None = None
+    """Seconds the simulated link has been up; a test sets it to make the link an old one."""
     silent: bool = False
     ignore_commands: bool = False
     zero_stop_ignored: bool = False
@@ -244,9 +246,11 @@ class FakeValve:
         if self.connect_error is not None:
             raise self.connect_error
         self.connected = True
+        self.link_age = 0.0
 
     async def disconnect(self) -> None:
         """Pretend to disconnect."""
+        self.link_age = None
         self.connected = False
 
     async def __aenter__(self) -> FakeValve:

@@ -210,6 +210,7 @@ class BleTransport:
         self._assembler = FrameAssembler()
         self._pieces: list[bytes] = []
         self._source: str | None = None
+        self._connected_at = 0.0
         self.unsolicited = 0
         """Frames received that no request was waiting for, or that fitted none."""
         self.last_frames: deque[tuple[str, bytes]] = deque(maxlen=48)
@@ -231,6 +232,20 @@ class BleTransport:
     def is_connected(self) -> bool:
         """True while the BLE link is up."""
         return self._client is not None and self._client.is_connected
+
+    @property
+    def link_age(self) -> float | None:
+        """Seconds since the present link came up, or None when there is none.
+
+        Measured through an ESPHome proxy on a Mira Platinum: requests on a new link take
+        0.1 to 0.3 s, and once the link has been up for a few seconds they take 7 to 10 s
+        and often time out (the valve appears to relax the connection once it is idle, as
+        another project saw on an Activate). A caller that needs a prompt answer on a proxy
+        should use a new connection rather than one that has been held.
+        """
+        if not self.is_connected:
+            return None
+        return asyncio.get_running_loop().time() - self._connected_at
 
     @property
     def source(self) -> str | None:
@@ -255,6 +270,7 @@ class BleTransport:
         self._pieces.clear()
         client = await self._connect_with_retries()
         self._client = client
+        self._connected_at = asyncio.get_running_loop().time()
         try:
             await self._set_connection_params(client)
             await asyncio.sleep(SETTLE_AFTER_PAIR)

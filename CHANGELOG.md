@@ -31,6 +31,8 @@ layer; patch releases do not. Pin the exact version you have tested.
 - The proxy or adapter Home Assistant chose is recorded for every connection attempt,
   refused ones included, so a refusal is not pinned on the proxy that merely last heard the
   valve. One BlueZ pairing agent at a time. Both ported from grundfos-ble.
+- `BleTransport.link_age`: through an ESPHome proxy a link held for more than a few seconds
+  was measured to answer slowly, so callers can choose to reconnect.
 - Temperature limits enforced before anything is written.
 - `mira-ble` command line, with read-only `scan`, `info`, `status`, `watch`,
   `outlets-config` and `presets`.

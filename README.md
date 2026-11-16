@@ -163,6 +163,10 @@ Units are degrees Celsius, litres per minute, seconds and litres throughout.
 - **Replies are matched by shape.** A reply carries no identifier, so each read accepts only
   a reply of the right shape, and a request that does not complete (timeout, cancellation)
   closes the link.
+- **Prefer short connections through a proxy.** Measured through an ESPHome proxy on a Mira
+  Platinum, requests on a new link take 0.1 to 0.3 s; once the link has been up for a few
+  seconds they take 7 to 10 s and often time out. `BleTransport.link_age` says how old the
+  link is. From macOS a link held for minutes stayed quick.
 - **Optional reads.** `read_identity()` and `probe()` record what a valve refused or ignored
   in `errors` and carry on; only the state read must succeed.
 - **No configuration writes.** The library does not implement the opcodes that change outlet

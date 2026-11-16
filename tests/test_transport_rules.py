@@ -92,6 +92,17 @@ async def test_the_adapter_actually_used_is_reported(fake_establish: FakeClient)
     assert local.source == "/org/bluez/hci0"
 
 
+async def test_the_age_of_the_link_is_reported(fake_establish: FakeClient) -> None:
+    transport = BleTransport(_device())
+    assert transport.link_age is None
+    await transport.connect()
+    age = transport.link_age
+    assert age is not None
+    assert 0 <= age < 5
+    await transport.disconnect()
+    assert transport.link_age is None
+
+
 class _Scanner:
     def __init__(self, source: str) -> None:
         self.source = source
