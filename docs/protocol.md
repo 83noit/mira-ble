@@ -285,7 +285,11 @@ from a single idle recording), `5F` (controller configuration), `78` (commission
   proxy; 15 ms overloaded a shared proxy radio.
 - This library does not hold the link: callers connect, read or command, and disconnect,
   keeping the link only for as long as they need fast readings.
-- The valve takes one connection. Whether a wireless wall controller shares that slot is
+- A Mira Platinum accepts at least two connections at once (measured 2026-11-16: a Mac held one
+  for five minutes, reading every 5 s, while Home Assistant connected eight times through an
+  ESPHome proxy; nothing failed) and keeps advertising while connected. It also keeps at least
+  two bonds (the Mac's and the proxy's). The Mira Mode is reported to take one connection
+  (ha-mira-mode). The upper limit, and whether the wireless wall controller uses a slot, are
   unknown.
 
 ## Open questions
